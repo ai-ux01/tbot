@@ -1,0 +1,9 @@
+{
+  "name": "bot-ai",
+  "private": true,
+  "description": "Kotak API – React frontend, Node backend",
+  "scripts": {
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend && npm run dev"
+  }
+}

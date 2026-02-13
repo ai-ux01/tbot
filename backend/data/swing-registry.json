@@ -1,0 +1,12 @@
+{
+  "instruments": [
+    {
+      "sessionId": "24216b1b-1f4d-41a1-82db-51762f5ce2e2",
+      "instrumentToken": "nse_cm|2881",
+      "instrument": {
+        "exchangeSegment": "nse_cm",
+        "tradingSymbol": "RELIANCE"
+      }
+    }
+  ]
+}
