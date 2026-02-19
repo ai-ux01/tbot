@@ -11,9 +11,22 @@ body {
 }
 
 .app {
-  max-width: 720px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 1.5rem;
+}
+
+.trading-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .trading-panel {
+    grid-template-columns: 1fr;
+  }
 }
 
 .app-tabs {
@@ -92,6 +105,12 @@ body {
 
 .login-section {
   max-width: 420px;
+}
+
+.kite-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .login-form input,

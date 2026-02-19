@@ -1,11 +1,13 @@
 import http from 'http';
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import { config } from './config.js';
 import kotakRoutes from './routes/kotak.js';
 import botRoutes from './routes/bot.js';
 import swingRoutes from './routes/swing.js';
+import kiteRoutes from './routes/kite.js';
 import tradesRoutes from './routes/trades.js';
 import backtestRoutes from './routes/backtest.js';
 import { logger } from './logger.js';
@@ -21,9 +23,11 @@ setIO(io);
 
 app.use(cors({
   origin: config.corsOrigin,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Auth', 'Sid', 'X-Session-Id', 'neo-fin-key'],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Auth', 'Sid', 'X-Session-Id', 'X-Kite-Session-Id', 'neo-fin-key'],
+  credentials: true,
 }));
+app.use(cookieParser());
 app.use(express.json());
 
 // Request logging: structured (no tokens logged)
@@ -39,10 +43,16 @@ app.use((req, res, next) => {
 // Explicit preflight for login so cross-origin POST from 5173 always succeeds
 app.options('/api/kotak/login/totp', (_, res) => res.sendStatus(204));
 app.options('/api/kotak/login/mpin', (_, res) => res.sendStatus(204));
+app.options('/api/kite/sync-nse-historical', (_, res) => res.set('Allow', 'POST').sendStatus(204));
+app.options('/api/kite/stored-candles', (_, res) => res.set('Allow', 'GET').sendStatus(204));
+app.options('/api/kite/stored-candles/summary', (_, res) => res.set('Allow', 'GET').sendStatus(204));
+app.options('/api/kite/stored-candles/keep-only', (_, res) => res.set('Allow', 'DELETE').sendStatus(204));
+app.options('/api/kite/stored-candles/delete-by-tradingsymbols', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 
 app.use('/api/kotak', kotakRoutes);
 app.use('/api/bot', botRoutes);
 app.use('/api/swing', swingRoutes);
+app.use('/api/kite', kiteRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/backtest', backtestRoutes);
 

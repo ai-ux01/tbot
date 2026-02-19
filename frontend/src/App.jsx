@@ -10,18 +10,23 @@ import { QuotesExample } from './components/QuotesExample';
 import { BotLivePanel } from './components/BotLivePanel';
 import { SwingPanel } from './components/SwingPanel';
 import { TradeJournal } from './components/TradeJournal';
+import { KiteConnectPanel } from './components/KiteConnectPanel';
+import { NseHistoricalSyncPanel } from './components/NseHistoricalSyncPanel';
+import { StoredDataPanel } from './components/StoredDataPanel';
 import './App.css';
 
 const TABS = [
   { id: 'trading', label: 'Trading' },
   { id: 'orders', label: 'Orders & Journal' },
+  { id: 'nse-sync', label: 'NSE Sync' },
+  { id: 'stored-data', label: 'Stored Data' },
   { id: 'more', label: 'More' },
 ];
 
 function AppContent() {
   const { isLoggedIn, logout } = useSession();
   const [activeTab, setActiveTab] = useState('trading');
-
+console.log('isLoggedIn', isLoggedIn);
   if (!isLoggedIn) {
     return (
       <div className="app">
@@ -32,6 +37,7 @@ function AppContent() {
           <h2>Login</h2>
           <LoginFlow />
         </section>
+      
       </div>
     );
   }
@@ -61,11 +67,15 @@ function AppContent() {
       </nav>
 
       {activeTab === 'trading' && (
-        <div className="app-tab-panel">
-          <section className="section">
+        <div className="app-tab-panel trading-panel">
+            <section className="section login-section">
+      
+          <KiteConnectPanel />
+        </section>
+          {/* <section className="section">
             <h2>Intraday bot</h2>
             <BotLivePanel />
-          </section>
+          </section> */}
           <section className="section">
             <h2>Swing bot</h2>
             <SwingPanel />
@@ -86,8 +96,28 @@ function AppContent() {
         </div>
       )}
 
+      {activeTab === 'nse-sync' && (
+        <div className="app-tab-panel">
+          <section className="section">
+            <NseHistoricalSyncPanel />
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'stored-data' && (
+        <div className="app-tab-panel">
+          <section className="section">
+            <StoredDataPanel />
+          </section>
+        </div>
+      )}
+
       {activeTab === 'more' && (
         <div className="app-tab-panel">
+          {/* <section className="section">
+            <h2>Kite Connect</h2>
+            <KiteConnectPanel />
+          </section> */}
           <section className="section">
             <h2>Reports</h2>
             <ReportsExample />

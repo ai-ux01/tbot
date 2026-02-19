@@ -96,6 +96,7 @@ export class HistoricalRepository {
 
   /**
    * Bulk upsert candles. Uses bulkWrite for performance.
+   * Time is stored in UTC (MongoDB Date).
    * @param {string} symbol
    * @param {string} timeframe
    * @param {Array<{ time: number | Date, open: number, high: number, low: number, close: number, volume?: number }>} candles
@@ -103,7 +104,7 @@ export class HistoricalRepository {
   static async _persistCandles(symbol, timeframe, candles) {
     if (!isDbConnected() || !candles.length) return;
     const ops = candles.map((c) => {
-      const time = c.time instanceof Date ? c.time : new Date(c.time);
+      const time = c.time instanceof Date ? c.time : new Date(c.time); // UTC
       return {
         updateOne: {
           filter: { symbol, timeframe, time },
