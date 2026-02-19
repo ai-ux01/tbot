@@ -10,6 +10,7 @@ import swingRoutes from './routes/swing.js';
 import kiteRoutes from './routes/kite.js';
 import tradesRoutes from './routes/trades.js';
 import backtestRoutes from './routes/backtest.js';
+import signalsRoutes from './routes/signals.js';
 import { logger } from './logger.js';
 import { setIO } from './socket.js';
 import { connectDb, disconnectDb } from './database/connection.js';
@@ -48,6 +49,8 @@ app.options('/api/kite/stored-candles', (_, res) => res.set('Allow', 'GET').send
 app.options('/api/kite/stored-candles/summary', (_, res) => res.set('Allow', 'GET').sendStatus(204));
 app.options('/api/kite/stored-candles/keep-only', (_, res) => res.set('Allow', 'DELETE').sendStatus(204));
 app.options('/api/kite/stored-candles/delete-by-tradingsymbols', (_, res) => res.set('Allow', 'POST').sendStatus(204));
+app.options('/api/signals', (_, res) => res.set('Allow', 'GET, POST').sendStatus(204));
+app.options('/api/signals/evaluate', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 
 app.use('/api/kotak', kotakRoutes);
 app.use('/api/bot', botRoutes);
@@ -55,6 +58,7 @@ app.use('/api/swing', swingRoutes);
 app.use('/api/kite', kiteRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/backtest', backtestRoutes);
+app.use('/api/signals', signalsRoutes);
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 

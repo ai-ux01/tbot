@@ -1,5 +1,10 @@
 # Dependencies
 node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.keras
 
 # Environment
 .env

@@ -13,6 +13,7 @@ import { TradeJournal } from './components/TradeJournal';
 import { KiteConnectPanel } from './components/KiteConnectPanel';
 import { NseHistoricalSyncPanel } from './components/NseHistoricalSyncPanel';
 import { StoredDataPanel } from './components/StoredDataPanel';
+import { SignalsPanel } from './components/SignalsPanel';
 import './App.css';
 
 const TABS = [
@@ -20,6 +21,7 @@ const TABS = [
   { id: 'orders', label: 'Orders & Journal' },
   { id: 'nse-sync', label: 'NSE Sync' },
   { id: 'stored-data', label: 'Stored Data' },
+  { id: 'signals', label: 'AI Signals' },
   { id: 'more', label: 'More' },
 ];
 
@@ -108,6 +110,14 @@ console.log('isLoggedIn', isLoggedIn);
         <div className="app-tab-panel">
           <section className="section">
             <StoredDataPanel />
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'signals' && (
+        <div className="app-tab-panel">
+          <section className="section">
+            <SignalsPanel />
           </section>
         </div>
       )}
