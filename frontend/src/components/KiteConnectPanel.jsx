@@ -40,15 +40,25 @@ export function KiteConnectPanel() {
     oi: 0,
   });
 
+  const emitKiteProfileToHeader = (profileData) => {
+    const userName = profileData
+      ? (profileData.user_name ?? profileData.user_id ?? null)
+      : null;
+    window.dispatchEvent(new CustomEvent('kite-connect-profile', { detail: { userName } }));
+  };
+
   const checkKiteSession = async (sessionIdOverride = null) => {
     try {
       const data = await getKiteProfile(sessionIdOverride);
-      setProfile(data?.data ?? data);
+      const profileData = data?.data ?? data;
+      setProfile(profileData);
       setStatus('connected');
       setError(null);
+      emitKiteProfileToHeader(profileData);
     } catch (e) {
       setProfile(null);
       setStatus('disconnected');
+      emitKiteProfileToHeader(null);
       if (e?.code !== 'KITE_SESSION_EXPIRED') setError(e?.message ?? 'Not connected');
       else setError(null);
     }
@@ -154,6 +164,7 @@ export function KiteConnectPanel() {
     try {
       await kiteLogout();
       setProfile(null);
+      emitKiteProfileToHeader(null);
       setStatus('disconnected');
       setHistorical({ candles: null, loading: false, err: null });
     } catch (e) {
@@ -243,7 +254,7 @@ export function KiteConnectPanel() {
             {busy ? '…' : 'Logout Kite'}
           </button>
 
-          <div className="kite-historical" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #2f3336' }}>
+          {/* <div className="kite-historical" style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #2f3336' }}>
             <h4 style={{ fontSize: '0.85rem', margin: '0 0 8px', color: '#8b98a5' }}>Instruments</h4>
             <p className="muted" style={{ fontSize: '0.8em', marginBottom: 8 }}>Load instrument list, then search and select for historical data</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
@@ -416,7 +427,7 @@ export function KiteConnectPanel() {
                 )}
               </div>
             )}
-          </div>
+          </div> */}
         </>
       )}
       {error && <p className="bot-live-error" style={{ marginTop: 8 }}>{error}</p>}

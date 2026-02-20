@@ -12,7 +12,9 @@ export function NseHistoricalSyncPanel() {
   const [error, setError] = useState(null);
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllProgress, setSyncAllProgress] = useState({ current: 0, total: 0 });
+  const [startSerial, setStartSerial] = useState(1);
 
+  const SYNC_RANGE_COUNT = 150;
   const hasSession = !!getStoredKiteSessionId();
 
   useEffect(() => {
@@ -105,119 +107,226 @@ export function NseHistoricalSyncPanel() {
     if (lastSuccess) setLastResult(lastSuccess);
   };
 
-  return (
-    <div className="nse-sync-panel" style={{ maxWidth: 560 }}>
-      <h2 style={{ fontSize: '1rem', margin: '0 0 8px', color: '#e7e9ea' }}>
-        NSE historical sync
-      </h2>
-      <p className="muted" style={{ fontSize: '0.85em', marginBottom: 12 }}>
-        List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock. Requires Kite login and MongoDB.
-      </p>
-      {!hasSession && (
-        <p className="bot-live-error" style={{ marginBottom: 12 }}>
-          Not connected to Kite. Go to the More tab and log in with Kite first.
-        </p>
-      )}
+  const handleSync150FromSerial = async () => {
+    if (!hasSession || filtered.length === 0) return;
+    const serial = Math.max(1, parseInt(startSerial, 10) || 1);
+    const fromIndex = serial - 1;
+    const slice = filtered.slice(fromIndex, fromIndex + SYNC_RANGE_COUNT);
+    if (slice.length === 0) {
+      setError(`Serial ${serial} is out of range (1–${filtered.length})`);
+      return;
+    }
+    setError(null);
+    setLastResult(null);
+    setSyncingAll(true);
+    setSyncAllProgress({ current: 0, total: slice.length });
+    let lastSuccess = null;
+    for (let i = 0; i < slice.length; i++) {
+      const inst = slice[i];
+      const token = String(inst.instrument_token ?? '');
+      if (!token) continue;
+      setSyncingToken(token);
+      setSyncAllProgress((p) => ({ ...p, current: i + 1 }));
+      try {
+        const data = await syncNseHistorical({ instrument_token: token });
+        lastSuccess = { ...data, tradingsymbol: inst.tradingsymbol, name: inst.name };
+      } catch (e) {
+        setError(e?.message ?? `Sync failed at ${inst.tradingsymbol ?? token}`);
+        if (e?.code === 'KITE_SESSION_EXPIRED') {
+          setLastResult(null);
+          break;
+        }
+      }
+      setSyncingToken(null);
+    }
+    setSyncingToken(null);
+    setSyncingAll(false);
+    if (lastSuccess) setLastResult(lastSuccess);
+  };
 
-      {hasSession && (
-        <>
-          <div style={{ marginBottom: 12, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            <input
-              type="text"
-              placeholder="Search by name, symbol or instrument code…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="bot-live-input"
-              style={{ width: '100%', maxWidth: 320 }}
-            />
-            <button
-              type="button"
-              className="bot-live-button"
-              disabled={listLoading || syncingAll || filtered.length === 0}
-              onClick={handleSyncAll}
-              title={`Sync all ${filtered.length} visible stocks`}
-            >
-              {syncingAll
-                ? `Syncing ${syncAllProgress.current} / ${syncAllProgress.total}…`
-                : `Sync all (${filtered.length})`}
-            </button>
+  if (!hasSession) {
+    return (
+      <div className="dashboard-card">
+        <h2 className="dashboard-card-title">NSE Historical Sync</h2>
+        <p className="dashboard-card-subtitle">
+          List NSE equity stocks and sync 5 years 1D + 1H data. Requires Kite login and MongoDB.
+        </p>
+        <div className="dashboard-empty">
+          <p>Not connected to Kite.</p>
+          <p className="muted" style={{ fontSize: '0.85rem' }}>
+            Go to <strong>Trading</strong> and log in with Kite first.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const progressPct = syncAllProgress.total > 0
+    ? Math.round((syncAllProgress.current / syncAllProgress.total) * 100)
+    : 0;
+
+  return (
+    <div className="nse-sync-panel">
+      <div className="dashboard-card">
+        <h2 className="dashboard-card-title">NSE Historical Sync</h2>
+        <p className="dashboard-card-subtitle">
+          List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock or run batch sync.
+        </p>
+
+        <div className="kpi-grid">
+          <div className="kpi-card">
+            <div className="kpi-label">Instruments loaded</div>
+            <div className="kpi-value">{listLoading ? '…' : instruments.length}</div>
           </div>
-          {listLoading && <p className="muted" style={{ marginBottom: 8 }}>Loading equity list…</p>}
-          {error && <p className="bot-live-error" style={{ marginBottom: 8 }}>{error}</p>}
-          {lastResult && (
-            <div style={{ padding: 10, background: '#1a1d21', borderRadius: 8, fontSize: '0.9rem', marginBottom: 12 }}>
-              <p style={{ margin: '0 0 6px', fontWeight: 600 }}>
-                Last sync: {lastResult.tradingsymbol ?? lastResult.name ?? '—'}
-              </p>
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                <li>Day candles: {lastResult.candlesDay ?? 0}</li>
-                <li>60m candles: {lastResult.candles60m ?? 0}</li>
-              </ul>
+          <div className="kpi-card">
+            <div className="kpi-label">Visible (filtered)</div>
+            <div className="kpi-value">{filtered.length}</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">Last sync</div>
+            <div className="kpi-value">
+              {lastResult ? (lastResult.tradingsymbol ?? lastResult.name ?? '—') : '—'}
+            </div>
+          </div>
+          {syncingAll && (
+            <div className="kpi-card">
+              <div className="kpi-label">Syncing</div>
+              <div className="kpi-value">
+                {syncAllProgress.current} / {syncAllProgress.total}
+              </div>
             </div>
           )}
-          <div
-            style={{
-              border: '1px solid #38444d',
-              borderRadius: 8,
-              maxHeight: 360,
-              overflow: 'auto',
-            }}
-          >
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: 'right', padding: '8px 10px', borderBottom: '1px solid #38444d', width: 48 }}>#</th>
-                  <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #38444d' }}>Symbol</th>
-                  <th style={{ textAlign: 'right', padding: '8px 10px', borderBottom: '1px solid #38444d', width: 100 }}>Instrument code</th>
-                  <th style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #38444d' }}>Name</th>
-                  <th style={{ textAlign: 'right', padding: '8px 10px', borderBottom: '1px solid #38444d' }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((inst, index) => {
-                  const token = String(inst.instrument_token ?? '');
-                  const isSyncing = syncingToken === token;
-                  return (
-                    <tr
-                      key={token}
-                      style={{
-                        background: isSyncing ? 'rgba(29, 155, 240, 0.1)' : undefined,
-                      }}
-                    >
-                      <td style={{ padding: '6px 10px', borderBottom: '1px solid #2f3336', textAlign: 'right', color: '#8b98a5' }}>
-                        {index + 1}
-                      </td>
-                      <td style={{ padding: '6px 10px', borderBottom: '1px solid #2f3336' }}>
-                        {inst.tradingsymbol ?? '—'}
-                      </td>
-                      <td style={{ padding: '6px 10px', borderBottom: '1px solid #2f3336', textAlign: 'right', color: '#8b98a5', fontVariantNumeric: 'tabular-nums' }}>
-                        {inst.instrument_token ?? '—'}
-                      </td>
-                      <td style={{ padding: '6px 10px', borderBottom: '1px solid #2f3336', color: '#8b98a5' }}>
-                        {inst.name ?? '—'}
-                      </td>
-                      <td style={{ padding: '6px 10px', borderBottom: '1px solid #2f3336', textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          className="bot-live-button"
-                          style={{ padding: '4px 10px', fontSize: '0.8rem' }}
-                          onClick={() => handleSyncOne(inst)}
-                          disabled={isSyncing || listLoading || syncingAll}
-                        >
-                          {isSyncing ? 'Syncing…' : 'Sync'}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        </div>
+
+        {syncingAll && (
+          <div className="dashboard-progress">
+            <div
+              className="dashboard-progress-fill"
+              style={{ width: `${progressPct}%` }}
+              role="progressbar"
+              aria-valuenow={syncAllProgress.current}
+              aria-valuemin={0}
+              aria-valuemax={syncAllProgress.total}
+            />
           </div>
-          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>
-            {filtered.length} of {instruments.length} NSE equity stocks. Click Sync to fetch 5 years 1D + 1H for that stock.
-          </p>
-        </>
-      )}
+        )}
+
+        <div className="dashboard-toolbar">
+          <input
+            type="text"
+            placeholder="Search by name, symbol or instrument code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="bot-live-input"
+            style={{ flex: '1', minWidth: '200px', maxWidth: '320px' }}
+          />
+          <button
+            type="button"
+            className="bot-live-button"
+            disabled={listLoading || syncingAll || filtered.length === 0}
+            onClick={handleSyncAll}
+            title={`Sync all ${filtered.length} visible stocks`}
+          >
+            {syncingAll
+              ? `Syncing ${syncAllProgress.current} / ${syncAllProgress.total}…`
+              : `Sync all (${filtered.length})`}
+          </button>
+        </div>
+
+        <div className="dashboard-toolbar">
+          <label htmlFor="nse-start-serial" className="muted" style={{ marginRight: 4 }}>
+            Start at #
+          </label>
+          <input
+            id="nse-start-serial"
+            type="number"
+            min={1}
+            max={filtered.length || 1}
+            placeholder="1"
+            value={startSerial === 1 ? '' : startSerial}
+            onChange={(e) => setStartSerial(Math.max(1, parseInt(e.target.value, 10) || 1))}
+            className="bot-live-input"
+            style={{ width: 72 }}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={listLoading || syncingAll || filtered.length === 0}
+            onClick={handleSync150FromSerial}
+            title={`Sync 150 stocks starting from serial number ${startSerial}`}
+          >
+            Sync 150 from #{startSerial || 1}
+          </button>
+          <span className="muted" style={{ fontSize: '0.8rem' }}>
+            Syncs 150 items from the given serial (1-based). Use search to narrow list first.
+          </span>
+        </div>
+
+        {listLoading && <p className="muted" style={{ marginBottom: 8 }}>Loading equity list…</p>}
+        {error && <p className="bot-live-error" style={{ marginBottom: 8 }}>{error}</p>}
+
+        {lastResult && (
+          <div className="dashboard-card-inner">
+            <p className="kpi-label" style={{ marginBottom: 4 }}>Last sync</p>
+            <p style={{ margin: '0 0 6px', fontWeight: 600, fontSize: '0.9375rem' }}>
+              {lastResult.tradingsymbol ?? lastResult.name ?? '—'}
+            </p>
+            <ul className="muted" style={{ margin: 0, paddingLeft: 20, fontSize: '0.875rem' }}>
+              <li>Day candles: {lastResult.candlesDay ?? 0}</li>
+              <li>60m candles: {lastResult.candles60m ?? 0}</li>
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div className="dashboard-card">
+        <h2 className="dashboard-card-title">Instruments</h2>
+        <div className="dashboard-table-wrap">
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th style={{ width: 48, textAlign: 'right' }}>#</th>
+                <th>Symbol</th>
+                <th style={{ width: 100, textAlign: 'right' }}>Instrument code</th>
+                <th>Name</th>
+                <th style={{ width: 90, textAlign: 'right' }}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((inst, index) => {
+                const token = String(inst.instrument_token ?? '');
+                const isSyncing = syncingToken === token;
+                return (
+                  <tr key={token} className={isSyncing ? 'syncing' : ''}>
+                    <td style={{ textAlign: 'right', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                      {index + 1}
+                    </td>
+                    <td>{inst.tradingsymbol ?? '—'}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                      {inst.instrument_token ?? '—'}
+                    </td>
+                    <td style={{ color: 'var(--text-muted)' }}>{inst.name ?? '—'}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      <button
+                        type="button"
+                        className="bot-live-button"
+                        style={{ padding: '4px 10px', fontSize: '0.8rem' }}
+                        onClick={() => handleSyncOne(inst)}
+                        disabled={isSyncing || listLoading || syncingAll}
+                      >
+                        {isSyncing ? 'Syncing…' : 'Sync'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
+          {filtered.length} of {instruments.length} NSE equity stocks. Click Sync to fetch 5 years 1D + 1H for that stock.
+        </p>
+      </div>
     </div>
   );
 }

@@ -110,8 +110,9 @@ export async function getKiteMarginsSegment(segment) {
 /**
  * NSE display filter: keep only instruments that match
  * exchange=NSE, segment=NSE, instrument_type=EQ, lot_size=1,
- * name non-empty, and name does not contain "%" or "SDL".
- * @param {Array<{ exchange?: string, segment?: string, instrument_type?: string, lot_size?: string|number, name?: string }>} list
+ * name non-empty, no "%" or "SDL" in name,
+ * and tradingsymbol excludes -SG, ETF, BE, BZ.
+ * @param {Array<{ exchange?: string, segment?: string, instrument_type?: string, lot_size?: string|number, name?: string, tradingsymbol?: string }>} list
  * @returns {Array} Filtered list (items that pass the filter).
  */
 export function filterNseDisplayInstruments(list) {
@@ -120,11 +121,16 @@ export function filterNseDisplayInstruments(list) {
     if (String(i.exchange || '').toUpperCase() !== 'NSE') return false;
     if (String(i.segment || '').toUpperCase() !== 'NSE') return false;
     if (String(i.instrument_type || '').toUpperCase() !== 'EQ') return false;
-    if (String(i.lot_size ?? '') !== '1') return false;
+    if (Number(i.lot_size) !== 1) return false;
     const name = String(i.name || '').trim();
     if (!name) return false;
     if (name.includes('%')) return false;
     if (name.includes('SDL')) return false;
+    const ts = String(i.tradingsymbol || '');
+    if (ts.includes('-SG')) return false;
+    if (ts.includes('ETF')) return false;
+    if (ts.includes('BE')) return false;
+    if (ts.includes('BZ')) return false;
     return true;
   });
 }
