@@ -1,8 +1,12 @@
 """
 FastAPI ML service: /predict accepts OHLCV candles, returns pattern, probability, trend_prediction.
+/train runs model training and saves the model.
 """
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -55,3 +59,31 @@ def predict_endpoint(req: PredictRequest):
         probability=round(probability, 4),
         trend_prediction=trend_prediction,
     )
+
+
+@app.post("/train")
+def train_endpoint():
+    """Run model training (train.py). Saves model to ML_MODEL_PATH or saved_model.keras."""
+    base = Path(__file__).resolve().parent
+    train_script = base / "train.py"
+    if not train_script.exists():
+        raise HTTPException(status_code=500, detail="train.py not found")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(train_script)],
+            cwd=str(base),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Training timed out (max 600s)")
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=result.stderr.strip() or result.stdout.strip() or "Training failed",
+        )
+    # Force reload of model on next /predict
+    global _model
+    _model = None
+    return {"status": "ok", "message": "Model saved", "stdout": result.stdout.strip()}

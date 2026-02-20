@@ -1,7 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
-import { getSignals, evaluateSignal } from '../api/signals';
-
-const POLL_INTERVAL_MS = 30000;
+import { useSignals } from '../context/SignalsContext';
 
 function formatTime(iso) {
   if (!iso) return '—';
@@ -12,209 +9,117 @@ function formatTime(iso) {
   }
 }
 
+function signalCell(sig) {
+  if (sig == null) return '—';
+  const color = sig === 'BUY' ? 'var(--success)' : sig === 'SELL' ? 'var(--danger)' : 'var(--text-muted)';
+  return <span style={{ fontWeight: 600, color }}>{sig}</span>;
+}
+
 export function SignalsPanel() {
-  const [signals, setSignals] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [instrumentFilter, setInstrumentFilter] = useState('');
-  const [timeframeFilter, setTimeframeFilter] = useState('');
-  const [evaluating, setEvaluating] = useState(null);
-  const [evalForm, setEvalForm] = useState({ instrument: '', timeframe: 'day' });
-
-  const fetchSignals = useCallback(async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      const data = await getSignals({
-        instrument: instrumentFilter || undefined,
-        timeframe: timeframeFilter || undefined,
-        limit: 50,
-      });
-      setSignals(Array.isArray(data.signals) ? data.signals : []);
-    } catch (e) {
-      setError(e?.message ?? 'Failed to load signals');
-      setSignals([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [instrumentFilter, timeframeFilter]);
-
-  useEffect(() => {
-    fetchSignals();
-    const id = setInterval(fetchSignals, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [fetchSignals]);
-
-  const handleEvaluate = async () => {
-    const inst = (evalForm.instrument || '').trim();
-    const tf = (evalForm.timeframe || 'day').trim();
-    if (!inst) {
-      setError('Enter instrument/symbol');
-      return;
-    }
-    setError(null);
-    setEvaluating(inst);
-    try {
-      await evaluateSignal({ instrument: inst, tradingsymbol: inst, timeframe: tf });
-      await fetchSignals();
-    } catch (e) {
-      setError(e?.message ?? 'Evaluate failed');
-    } finally {
-      setEvaluating(null);
-    }
-  };
-
-  const buyCount = signals.filter((s) => s.signal_type === 'BUY').length;
-  const sellCount = signals.filter((s) => s.signal_type === 'SELL').length;
+  const {
+    signals,
+    loading,
+    search,
+    setSearch,
+    signalTypeFilter,
+    setSignalTypeFilter,
+    filteredSignals,
+  } = useSignals();
 
   return (
     <div className="signals-panel">
       <div className="dashboard-card">
-        <h2 className="dashboard-card-title">AI Signals</h2>
-        <p className="dashboard-card-subtitle">
-          Latest signals from pattern detection + rule-based indicators. Alerts fire when signal is BUY/SELL and confidence ≥ 75%.
-        </p>
-
-        <div className="kpi-grid">
-          <div className="kpi-card">
-            <div className="kpi-label">Total signals</div>
-            <div className="kpi-value">{loading && signals.length === 0 ? '…' : signals.length}</div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">BUY</div>
-            <div className="kpi-value" style={{ color: 'var(--success)' }}>{buyCount}</div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">SELL</div>
-            <div className="kpi-value" style={{ color: 'var(--danger)' }}>{sellCount}</div>
+        <div className="dashboard-card-header-with-filters">
+          <h2 className="dashboard-card-title" style={{ marginBottom: 0 }}>Signals (combined 1D + 1H)</h2>
+          <div className="dashboard-toolbar" style={{ marginBottom: 0, flexWrap: 'nowrap' }}>
+            <input
+              type="text"
+              placeholder="Search instrument…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="bot-live-input"
+              style={{ width: 160 }}
+            />
+            <span className="signals-stacked-label" style={{ marginRight: 4 }}>Signal:</span>
+            <select
+              value={signalTypeFilter}
+              onChange={(e) => setSignalTypeFilter(e.target.value)}
+              className="bot-live-input"
+              style={{ width: 90 }}
+            >
+              <option value="all">All</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+              <option value="HOLD">HOLD</option>
+            </select>
           </div>
         </div>
-
-        <div className="dashboard-toolbar">
-          <input
-            type="text"
-            placeholder="Filter by instrument"
-            value={instrumentFilter}
-            onChange={(e) => setInstrumentFilter(e.target.value)}
-            className="bot-live-input"
-            style={{ width: 160 }}
-          />
-          <select
-            value={timeframeFilter}
-            onChange={(e) => setTimeframeFilter(e.target.value)}
-            className="bot-live-input"
-            style={{ width: 120 }}
-          >
-            <option value="">All timeframes</option>
-            <option value="day">1D</option>
-            <option value="60minute">1H</option>
-          </select>
-          <button type="button" className="bot-live-button" onClick={fetchSignals} disabled={loading}>
-            {loading ? 'Loading…' : 'Refresh'}
-          </button>
-        </div>
-
-        <div className="dashboard-card-inner" style={{ marginBottom: 0 }}>
-          <span className="muted" style={{ marginRight: 8 }}>Evaluate:</span>
-          <input
-            type="text"
-            placeholder="Symbol e.g. RELIANCE"
-            value={evalForm.instrument}
-            onChange={(e) => setEvalForm((f) => ({ ...f, instrument: e.target.value }))}
-            className="bot-live-input"
-            style={{ width: 160, marginRight: 8 }}
-          />
-          <select
-            value={evalForm.timeframe}
-            onChange={(e) => setEvalForm((f) => ({ ...f, timeframe: e.target.value }))}
-            className="bot-live-input"
-            style={{ width: 80, marginRight: 8 }}
-          >
-            <option value="day">1D</option>
-            <option value="60minute">1H</option>
-          </select>
-          <button
-            type="button"
-            className="bot-live-button"
-            onClick={handleEvaluate}
-            disabled={evaluating || !evalForm.instrument.trim()}
-          >
-            {evaluating ? 'Running…' : 'Run'}
-          </button>
-        </div>
-
-        {error && <p className="bot-live-error" style={{ marginTop: 12, marginBottom: 0 }}>{error}</p>}
-      </div>
-
-      <div className="dashboard-card">
-        <h2 className="dashboard-card-title">Signals list</h2>
         <div className="dashboard-table-wrap" style={{ maxHeight: 480 }}>
           <table className="dashboard-table">
             <thead>
               <tr>
                 <th>Instrument</th>
-                <th>Timeframe</th>
                 <th>Signal</th>
-                <th style={{ textAlign: 'right' }}>Confidence</th>
-                <th>Pattern</th>
-                <th style={{ maxWidth: 280 }}>Explanation</th>
-                <th>Time</th>
+                <th>Explain</th>
               </tr>
             </thead>
             <tbody>
               {loading && signals.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ padding: 24, color: 'var(--text-muted)', textAlign: 'center' }}>
+                  <td colSpan={3} style={{ padding: 24, color: 'var(--text-muted)', textAlign: 'center' }}>
                     Loading…
                   </td>
                 </tr>
-              ) : signals.length === 0 ? (
+              ) : filteredSignals.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ padding: 24, color: 'var(--text-muted)', textAlign: 'center' }}>
-                    No signals. Run Evaluate for a symbol with stored candles.
+                  <td colSpan={3} style={{ padding: 24, color: 'var(--text-muted)', textAlign: 'center' }}>
+                    {signals.length === 0
+                      ? 'No signals. Run "Run analysis on all" or Evaluate for a symbol with stored candles.'
+                      : 'No matches. Try a different search or signal filter.'}
                   </td>
                 </tr>
               ) : (
-                signals.map((s) => (
-                  <tr key={s._id}>
-                    <td>{s.tradingsymbol || s.instrument || '—'}</td>
-                    <td>{s.timeframe || '—'}</td>
-                    <td>
-                      <span
-                        style={{
-                          fontWeight: 600,
-                          color:
-                            s.signal_type === 'BUY'
-                              ? 'var(--success)'
-                              : s.signal_type === 'SELL'
-                                ? 'var(--danger)'
-                                : 'var(--text-muted)',
-                        }}
-                      >
-                        {s.signal_type || 'HOLD'}
-                      </span>
+                filteredSignals.map((s) => (
+                  <tr key={s.tradingsymbol || s.instrument || ''}>
+                    <td style={{ verticalAlign: 'top' }}>
+                      <div className="signals-stacked-cell">
+                        <div>{s.tradingsymbol || s.instrument || '—'}</div>
+                        <div style={{ marginTop: 6 }}>
+                          <span
+                            className={`signals-combined-btn signals-combined-btn-${(s.signal_type || 'HOLD').toLowerCase()}`}
+                            role="status"
+                          >
+                            {s.signal_type || 'HOLD'}
+                          </span>
+                        </div>
+                      </div>
                     </td>
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      {s.confidence != null ? `${(s.confidence * 100).toFixed(0)}%` : '—'}
+                    <td style={{ verticalAlign: 'top' }}>
+                      <div className="signals-stacked-cell">
+                        <div>
+                          <span className="signals-stacked-label">1D:</span> {signalCell(s.daySignal)}
+                          <span style={{ marginLeft: 12 }}><span className="signals-stacked-label">1H:</span> {signalCell(s.hourSignal)}</span>
+                        </div>
+                        <div className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>
+                          <span className="signals-stacked-label">1D conf.</span> {s.dayConfidence != null ? `${(s.dayConfidence * 100).toFixed(0)}%` : '—'}
+                          <span style={{ marginLeft: 8 }}><span className="signals-stacked-label">1H conf.</span> {s.hourConfidence != null ? `${(s.hourConfidence * 100).toFixed(0)}%` : '—'}</span>
+                        </div>
+                        <div className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
+                          <span className="signals-stacked-label">Updated:</span> {formatTime(s.createdAt)}
+                        </div>
+                      </div>
                     </td>
-                    <td style={{ color: 'var(--text-muted)' }}>
-                      {s.pattern?.name
-                        ? `${s.pattern.name} (${(s.pattern.probability * 100 || 0).toFixed(0)}%)`
-                        : '—'}
-                    </td>
-                    <td
-                      style={{
-                        color: 'var(--text-muted)',
-                        maxWidth: 280,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                      title={s.explanation}
-                    >
-                      {s.explanation || '—'}
-                    </td>
-                    <td style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                      {formatTime(s.createdAt)}
+                    <td style={{ verticalAlign: 'top', maxWidth: 520 }}>
+                      <div className="signals-stacked-cell">
+                        <div style={{ marginBottom: 6 }}>
+                          <span className="signals-stacked-label">1D:</span>
+                          <span className="muted" style={{ fontSize: '0.85rem' }}> {s.dayExplanation || 'No explanation available.'}</span>
+                        </div>
+                        <div>
+                          <span className="signals-stacked-label">1H:</span>
+                          <span className="muted" style={{ fontSize: '0.85rem' }}> {s.hourExplanation || 'No explanation available.'}</span>
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -223,7 +128,7 @@ export function SignalsPanel() {
           </table>
         </div>
         <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
-          {signals.length} signal(s). Auto-refresh every 30s. Ensure ML service is running (optional) and stored candles exist.
+          {filteredSignals.length} shown{search || signalTypeFilter !== 'all' ? ` of ${signals.length}` : ''}. Combined = BUY only if both 1D and 1H BUY; SELL only if both SELL. Auto-refresh every 30s.
         </p>
       </div>
     </div>

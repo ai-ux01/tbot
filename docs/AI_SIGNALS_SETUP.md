@@ -24,12 +24,11 @@ Requires stored candles for the symbol (e.g. sync from NSE Sync or Stored Data).
 
 ## ML training (optional)
 
-```bash
-cd ml-service
-pip install tensorflow  # add to requirements.txt if using
-python train.py
-# Saves saved_model.keras; set ML_MODEL_PATH=saved_model.keras when running app
-```
+See **[HOW_TO_TRAIN.md](./HOW_TO_TRAIN.md)** for full steps. Quick options:
+
+- **UI:** Train AI tab → Start training (requires ML service running: `npm run ml`).
+- **API:** `POST /api/signals/train` (backend proxies to ML service).
+- **CLI:** `cd ml-service && .venv/bin/python train.py` (saves `saved_model.keras`).
 
 ## Docker
 

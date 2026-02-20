@@ -14,15 +14,19 @@ import { KiteConnectPanel } from './components/KiteConnectPanel';
 import { NseHistoricalSyncPanel } from './components/NseHistoricalSyncPanel';
 import { StoredDataPanel } from './components/StoredDataPanel';
 import { SignalsPanel } from './components/SignalsPanel';
+import { SignalsSidebarBlock } from './components/SignalsSidebarBlock';
+import { TrainAIPanel } from './components/TrainAIPanel';
+import { SignalsProvider } from './context/SignalsContext';
 import { getKiteProfile, getKiteLoginUrl, getStoredKiteSessionId, kiteLogout } from './api/kite';
 import './App.css';
 
 const TABS = [
+  { id: 'signals', label: 'AI Signals' },
+  { id: 'train-ai', label: 'Train AI' },
   { id: 'trading', label: 'Trading' },
   { id: 'orders', label: 'Orders & Journal' },
   { id: 'nse-sync', label: 'NSE Sync' },
   { id: 'stored-data', label: 'Stored Data' },
-  { id: 'signals', label: 'AI Signals' },
   { id: 'more', label: 'More' },
 ];
 
@@ -32,12 +36,13 @@ const PAGE_TITLES = {
   'nse-sync': 'NSE Sync',
   'stored-data': 'Stored Data',
   signals: 'AI Signals',
+  'train-ai': 'Train AI',
   more: 'More',
 };
 
 function AppContent() {
   const { isLoggedIn, logout } = useSession();
-  const [activeTab, setActiveTab] = useState('trading');
+  const [activeTab, setActiveTab] = useState('signals');
   const [kiteUserName, setKiteUserName] = useState(null);
   const [kiteLoggingOut, setKiteLoggingOut] = useState(false);
   const [kiteLoggingIn, setKiteLoggingIn] = useState(false);
@@ -104,25 +109,27 @@ function AppContent() {
   }
 
   return (
-    <div className="dashboard-wrap">
-      <aside className="dashboard-sidebar">
-        <div className="dashboard-sidebar-brand">
-          <h2 className="brand-name">Kotak Trading</h2>
-          <p className="brand-tagline">Trading dashboard</p>
-        </div>
-        <nav role="navigation" aria-label="Main">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
+    <SignalsProvider activeTab={activeTab}>
+      <div className="dashboard-wrap">
+        <aside className="dashboard-sidebar">
+          <div className="dashboard-sidebar-brand">
+            <h2 className="brand-name">Kotak Trading</h2>
+            <p className="brand-tagline">Trading dashboard</p>
+          </div>
+          <nav role="navigation" aria-label="Main">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`nav-item ${activeTab === tab.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+          {activeTab === 'signals' && <SignalsSidebarBlock />}
+        </aside>
       <main className="dashboard-main">
         <header className="dashboard-topbar">
           <h1>{PAGE_TITLES[activeTab] ?? 'Dashboard'}</h1>
@@ -194,6 +201,12 @@ function AppContent() {
               </div>
             )}
 
+            {activeTab === 'train-ai' && (
+              <div className="app-tab-panel">
+                <TrainAIPanel />
+              </div>
+            )}
+
             {activeTab === 'more' && (
               <div className="app-tab-panel">
                 <section className="section">
@@ -209,7 +222,8 @@ function AppContent() {
           </div>
         </div>
       </main>
-    </div>
+      </div>
+    </SignalsProvider>
   );
 }
 

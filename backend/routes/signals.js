@@ -6,7 +6,8 @@ import { Router } from 'express';
 import { Signal } from '../database/models/Signal.js';
 import { isDbConnected } from '../database/connection.js';
 import { computeIndicators } from '../services/IndicatorService.js';
-import { evaluateAndPersistSignal, getCandlesForSignal } from '../services/SignalEngine.js';
+import { evaluateAndPersistSignal, getCandlesForSignal, getSymbolsWithStoredCandles } from '../services/SignalEngine.js';
+import { trainModel } from '../services/PatternService.js';
 import { getAlertService } from '../services/AlertService.js';
 import { logger } from '../logger.js';
 
@@ -35,6 +36,79 @@ router.get('/', async (req, res) => {
   } catch (err) {
     logger.error('Signals list failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'List failed' });
+  }
+});
+
+/**
+ * GET /api/signals/combined
+ * One row per instrument: latest 1D and 1H signals combined.
+ * Combined = BUY only if both 1D and 1H are BUY; SELL only if both are SELL; else HOLD.
+ */
+router.get('/combined', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const limit = Math.min(500, Math.max(50, parseInt(req.query.limit, 10) || 200));
+    const instrumentFilter = (req.query.instrument || '').trim();
+    const raw = await Signal.find({
+      timeframe: { $in: ['day', '60minute'] },
+      ...(instrumentFilter ? { $or: [{ instrument: instrumentFilter }, { tradingsymbol: new RegExp(`^${instrumentFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }] } : {}),
+    })
+      .sort({ createdAt: -1 })
+      .limit(limit * 2)
+      .lean();
+
+    const byInstrument = {};
+    for (const s of raw) {
+      const key = String(s.instrument || s.tradingsymbol || '').trim();
+      if (!key) continue;
+      if (!byInstrument[key]) {
+        byInstrument[key] = { instrument: s.instrument, tradingsymbol: s.tradingsymbol || s.instrument, day: null, hour: null };
+      }
+      const slot = s.timeframe === 'day' ? 'day' : s.timeframe === '60minute' ? 'hour' : null;
+      if (slot && byInstrument[key][slot] === null) {
+        byInstrument[key][slot] = {
+          signal_type: s.signal_type,
+          confidence: s.confidence,
+          createdAt: s.createdAt,
+          explanation: s.explanation ?? '',
+        };
+      }
+    }
+
+    const combined = [];
+    for (const [key, row] of Object.entries(byInstrument)) {
+      const daySig = row.day?.signal_type;
+      const hourSig = row.hour?.signal_type;
+      let signal_type = 'HOLD';
+      if (daySig === 'BUY' && hourSig === 'BUY') signal_type = 'BUY';
+      else if (daySig === 'SELL' && hourSig === 'SELL') signal_type = 'SELL';
+
+      const dayConf = row.day?.confidence;
+      const hourConf = row.hour?.confidence;
+      const dayExplanation = (row.day?.explanation && String(row.day.explanation).trim()) ? String(row.day.explanation).trim() : 'No explanation available.';
+      const hourExplanation = (row.hour?.explanation && String(row.hour.explanation).trim()) ? String(row.hour.explanation).trim() : 'No explanation available.';
+      const latestAt = [row.day?.createdAt, row.hour?.createdAt].filter(Boolean).sort().pop();
+
+      combined.push({
+        instrument: row.instrument || key,
+        tradingsymbol: row.tradingsymbol || key,
+        signal_type,
+        daySignal: daySig || null,
+        hourSignal: hourSig || null,
+        dayConfidence: dayConf ?? null,
+        hourConfidence: hourConf ?? null,
+        dayExplanation,
+        hourExplanation,
+        createdAt: latestAt,
+      });
+    }
+    combined.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    res.json({ signals: combined });
+  } catch (err) {
+    logger.error('Signals combined failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Combined failed' });
   }
 });
 
@@ -100,6 +174,68 @@ router.post('/evaluate', async (req, res) => {
   } catch (err) {
     logger.error('Evaluate signal failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'Evaluate failed' });
+  }
+});
+
+const EVALUATE_ALL_TIMEFRAMES = ['day', '60minute'];
+
+/**
+ * POST /api/signals/evaluate-all
+ * Run evaluation for all symbols with stored candles, for 1D and 1H timeframes.
+ * Returns { evaluated, errors, symbolCount }.
+ */
+router.post('/evaluate-all', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const symbols = await getSymbolsWithStoredCandles();
+    let evaluated = 0;
+    const errors = [];
+    for (const { symbol, tradingsymbol } of symbols) {
+      const inst = symbol || tradingsymbol;
+      const trad = tradingsymbol || symbol;
+      if (!inst) continue;
+      for (const timeframe of EVALUATE_ALL_TIMEFRAMES) {
+        try {
+          const signal = await evaluateAndPersistSignal({
+            instrument: String(inst),
+            tradingsymbol: String(trad),
+            timeframe,
+          });
+          if (signal) evaluated += 1;
+        } catch (err) {
+          errors.push({ symbol: inst, timeframe, error: err?.message ?? 'Evaluate failed' });
+        }
+      }
+    }
+    res.json({ evaluated, errors, symbolCount: symbols.length });
+  } catch (err) {
+    logger.error('Evaluate-all failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Evaluate-all failed' });
+  }
+});
+
+/**
+ * POST /api/signals/train
+ * Trigger ML model training (proxies to ML service POST /train).
+ * Returns { status, message?, stdout? }. 503 if ML_SERVICE_URL not set.
+ */
+router.post('/train', async (req, res) => {
+  try {
+    const data = await trainModel();
+    res.json(data);
+  } catch (err) {
+    if (err?.code === 'ML_DISABLED') {
+      return res.status(503).json({ error: 'ML service not configured (set ML_SERVICE_URL)' });
+    }
+    const status = err?.response?.status >= 400 ? err.response.status : 502;
+    let message = err?.response?.data?.detail ?? err?.message ?? 'Training request failed';
+    if (status === 502 && !err?.response) {
+      message = 'ML service unreachable. Start it with: npm run ml (from project root).';
+    }
+    logger.error('Train failed', { error: err?.message, status: err?.response?.status, code: err?.code });
+    res.status(status).json({ error: message });
   }
 });
 

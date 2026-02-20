@@ -51,6 +51,9 @@ app.options('/api/kite/stored-candles/keep-only', (_, res) => res.set('Allow', '
 app.options('/api/kite/stored-candles/delete-by-tradingsymbols', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 app.options('/api/signals', (_, res) => res.set('Allow', 'GET, POST').sendStatus(204));
 app.options('/api/signals/evaluate', (_, res) => res.set('Allow', 'POST').sendStatus(204));
+app.options('/api/signals/evaluate-all', (_, res) => res.set('Allow', 'POST').sendStatus(204));
+app.options('/api/signals/combined', (_, res) => res.set('Allow', 'GET').sendStatus(204));
+app.options('/api/signals/train', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 
 app.use('/api/kotak', kotakRoutes);
 app.use('/api/bot', botRoutes);

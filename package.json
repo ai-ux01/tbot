@@ -4,6 +4,7 @@
   "description": "Kotak API – React frontend, Node backend",
   "scripts": {
     "backend": "cd backend && npm run dev",
-    "frontend": "cd frontend && npm run dev"
+    "frontend": "cd frontend && npm run dev",
+    "ml": "cd ml-service && .venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000"
   }
 }

@@ -18,6 +18,19 @@ const MIN_ML_PROB = 0.7;
 const MIN_CONFIDENCE_ALERT = 0.75;
 
 /**
+ * Get distinct symbols that have stored candles (for evaluate-all).
+ * @returns {Promise<Array<{ symbol: string, tradingsymbol: string }>>}
+ */
+export async function getSymbolsWithStoredCandles() {
+  const rows = await Candle.aggregate([
+    { $group: { _id: '$symbol', tradingsymbol: { $first: '$tradingsymbol' } } },
+    { $sort: { _id: 1 } },
+    { $project: { symbol: '$_id', tradingsymbol: 1, _id: 0 } },
+  ]);
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
  * Fetch last N candles from DB for symbol or tradingsymbol + timeframe (oldest first).
  */
 export async function getCandlesForSignal(symbol, timeframe, limit = CANDLE_LIMIT) {
@@ -134,4 +147,4 @@ export async function evaluateAndPersistSignal({ instrument, tradingsymbol, time
   return plain;
 }
 
-export default { evaluateAndPersistSignal, getCandlesForSignal };
+export default { evaluateAndPersistSignal, getCandlesForSignal, getSymbolsWithStoredCandles };

@@ -40,6 +40,18 @@ export async function getSignals(params = {}) {
 }
 
 /**
+ * GET /api/signals/combined?instrument=&limit=
+ * One row per instrument: combined signal = BUY only if both 1D and 1H BUY, SELL only if both SELL, else HOLD.
+ */
+export async function getSignalsCombined(params = {}) {
+  const q = new URLSearchParams();
+  if (params.instrument) q.set('instrument', params.instrument);
+  if (params.limit != null) q.set('limit', String(params.limit));
+  const query = q.toString();
+  return fetchJson('/combined' + (query ? `?${query}` : ''));
+}
+
+/**
  * GET /api/signals/indicators?symbol=&timeframe=&limit=
  */
 export async function getIndicators(params = {}) {
@@ -60,5 +72,27 @@ export async function evaluateSignal(body) {
   return fetchJson('/evaluate', {
     method: 'POST',
     body: JSON.stringify(body),
+  });
+}
+
+/**
+ * POST /api/signals/evaluate-all
+ * Run analysis on all symbols with stored candles (1D + 1H). Returns { evaluated, errors, symbolCount }.
+ */
+export async function evaluateAllSignals() {
+  return fetchJson('/evaluate-all', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+/**
+ * POST /api/signals/train
+ * Trigger ML model training. Returns { status, message?, stdout? }.
+ */
+export async function trainModel() {
+  return fetchJson('/train', {
+    method: 'POST',
+    body: JSON.stringify({}),
   });
 }

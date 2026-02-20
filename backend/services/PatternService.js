@@ -10,7 +10,12 @@ import { logger } from '../logger.js';
 const raw = process.env.ML_SERVICE_URL;
 const DEFAULT_ML_URL = raw === '' || raw === 'disabled' ? '' : (raw || 'http://localhost:8000');
 const TIMEOUT_MS = Number(process.env.ML_SERVICE_TIMEOUT_MS) || 10000;
+const TRAIN_TIMEOUT_MS = Number(process.env.ML_SERVICE_TRAIN_TIMEOUT_MS) || 120000;
 const RETRIES = Number(process.env.ML_SERVICE_RETRIES) || 2;
+
+export function getMlServiceUrl() {
+  return DEFAULT_ML_URL || null;
+}
 
 /**
  * @param {Array<{ open: number, high: number, low: number, close: number, volume?: number }>} candles
@@ -63,4 +68,22 @@ export async function predictPattern(candles) {
   return null;
 }
 
-export default { predictPattern };
+/**
+ * Trigger ML model training. POSTs to ML service /train.
+ * @returns {Promise<{ status: string, message?: string, stdout?: string }>}
+ * @throws {Error} when ML_SERVICE_URL is not set or request fails
+ */
+export async function trainModel() {
+  if (!DEFAULT_ML_URL) {
+    const err = new Error('ML service not configured (set ML_SERVICE_URL)');
+    err.code = 'ML_DISABLED';
+    throw err;
+  }
+  const res = await axios.post(`${DEFAULT_ML_URL}/train`, {}, {
+    timeout: TRAIN_TIMEOUT_MS,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return res.data;
+}
+
+export default { predictPattern, getMlServiceUrl, trainModel };
