@@ -123,46 +123,86 @@ export async function getHistoricalCandles(params) {
     oi,
   });
 
-  try {
-    const res = await axios.get(url, {
-      headers: {
-        Authorization: `token ${apiKey}:${accessToken}`,
-        'X-Kite-Version': '3',
-      },
-      timeout: 30000,
-    });
+  const maxRetries = 8;
+  const baseDelayMs = 5000;
 
-    const data = res.data;
-    const rawCandles = data?.data?.candles ?? data?.candles ?? [];
-    if (!Array.isArray(rawCandles)) {
-      logger.warn('kiteHistorical', { msg: 'Unexpected response shape', hasData: !!data });
-      return [];
-    }
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `token ${apiKey}:${accessToken}`,
+          'X-Kite-Version': '3',
+        },
+        timeout: 30000,
+        validateStatus: (status) => status < 400 || status === 429,
+      });
 
-    const candles = rawCandles.map((row) => candleFromRow(row, oi === 1));
-    logger.info('kiteHistorical', {
-      msg: 'Historical candles fetched',
-      instrumentToken: token,
-      count: candles.length,
-    });
-    return candles;
-  } catch (err) {
-    const status = err.response?.status;
-    const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message;
-    logger.error('kiteHistorical', {
-      msg: 'Historical fetch failed',
-      instrumentToken: token,
-      status,
-      error: message,
-    });
-    if (status === 401) {
-      throw new Error('Kite session expired or invalid');
+      if (res.status === 429) {
+        if (attempt >= maxRetries) {
+          throw new Error('Rate limit exceeded (429). Too many requests. Try again later.');
+        }
+        const retryAfter = res.headers?.['retry-after'];
+        let delayMs = baseDelayMs * Math.pow(2, attempt);
+        if (retryAfter != null) {
+          const parsed = parseInt(String(retryAfter), 10);
+          if (Number.isFinite(parsed)) delayMs = Math.max(delayMs, parsed * 1000);
+        }
+        delayMs = Math.min(delayMs, 300000);
+        logger.warn('kiteHistorical', {
+          msg: 'Rate limited (429), backing off',
+          instrumentToken: token,
+          attempt: attempt + 1,
+          delayMs,
+        });
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+
+      if (attempt > 0) {
+        const cooldownMs = 10000;
+        logger.info('kiteHistorical', { msg: 'Recovered from rate limit, cooling down', cooldownMs });
+        await new Promise((r) => setTimeout(r, cooldownMs));
+      }
+
+      if (res.status !== 200) {
+        const message = res.data?.message ?? res.data?.error ?? `HTTP ${res.status}`;
+        throw new Error(message || 'Failed to fetch historical candles');
+      }
+
+      const data = res.data;
+      const rawCandles = data?.data?.candles ?? data?.candles ?? [];
+      if (!Array.isArray(rawCandles)) {
+        logger.warn('kiteHistorical', { msg: 'Unexpected response shape', hasData: !!data });
+        return [];
+      }
+
+      const candles = rawCandles.map((row) => candleFromRow(row, oi === 1));
+      logger.info('kiteHistorical', {
+        msg: 'Historical candles fetched',
+        instrumentToken: token,
+        count: candles.length,
+      });
+      return candles;
+    } catch (err) {
+      const status = err.response?.status;
+      const message = err.response?.data?.message ?? err.response?.data?.error ?? err.message;
+      logger.error('kiteHistorical', {
+        msg: 'Historical fetch failed',
+        instrumentToken: token,
+        status,
+        error: message,
+      });
+      if (status === 401) {
+        throw new Error('Kite session expired or invalid');
+      }
+      if (status === 403) {
+        throw new Error('Kite access denied');
+      }
+      throw new Error(message || 'Failed to fetch historical candles');
     }
-    if (status === 403) {
-      throw new Error('Kite access denied');
-    }
-    throw new Error(message || 'Failed to fetch historical candles');
   }
+
+  throw new Error('Failed to fetch historical candles');
 }
 
 /**

@@ -29,6 +29,8 @@ export function evaluate(ohlcv, _marketContext = {}) {
     rsiLength: RSI_SETUP_CONFIG.rsiLength ?? 14,
     rsiMaLength: RSI_SETUP_CONFIG.rsiLength ?? 14,
     tolerancePercent: RSI_SETUP_CONFIG.priceTolerancePct ?? 0.5,
+    pullback2Min: RSI_SETUP_CONFIG.pullback2Min ?? 35,
+    pullback2Max: RSI_SETUP_CONFIG.pullback2Max ?? 60,
   });
 
   const results = strategy.evaluate(closes);

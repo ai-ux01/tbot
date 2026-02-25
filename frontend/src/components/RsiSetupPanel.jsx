@@ -63,7 +63,7 @@ export function RsiSetupPanel() {
       <div className="dashboard-card">
         <h2 className="dashboard-card-title">RSI Setup</h2>
         <p className="muted" style={{ marginBottom: 16 }}>
-          RSI momentum reset: peak ≥70 → Low1 (35–45) → rebound (55–65) → second pullback. Entry when close ≈ low1_price (0.5% tol), RSI 35–45, RSI turning up, RSI touches/crosses below RSI SMA. Confidence: LOW/MEDIUM/HIGH. 1D only.
+          RSI momentum reset: peak ≥70 → Low1 (35–45) → rebound (55–65) → second pullback (RSI 35–60). Entry when close ≈ low1_price (0.5% tol), RSI turning up, RSI touches/crosses below RSI SMA. Confidence: LOW/MEDIUM/HIGH. 1D only.
         </p>
         <div className="dashboard-toolbar" style={{ marginBottom: 16 }}>
           <button

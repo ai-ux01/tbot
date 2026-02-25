@@ -10,7 +10,7 @@ import { Candle } from '../database/models/Candle.js';
 import { isDbConnected } from '../database/connection.js';
 import { logger } from '../logger.js';
 
-const DELAY_MS = 400;
+const DELAY_MS = 2000;
 const YEARS_BACK = 5;
 const CHUNK_DAYS_60M = 60;
 
@@ -112,6 +112,7 @@ async function persistCandles(symbol, timeframe, candles, tradingsymbol = null) 
       low: c.low,
       close: c.close,
       volume: c.volume ?? 0,
+      updatedAt: new Date(),
     };
     if (setTradingsymbol) update.tradingsymbol = setTradingsymbol;
     return {
@@ -272,6 +273,7 @@ export async function syncNseEquityHistorical(session, options = {}) {
     try {
       const lastUpdated = await getLastUpdatedAt(token);
       if (lastUpdated && isTodayIST(lastUpdated)) {
+        logger.info('KiteNseHistoricalSync', { symbol: token, msg: 'Skipped (already updated today)' });
         continue;
       }
       const [latestDayTime, latest60mTime] = await Promise.all([

@@ -10,6 +10,9 @@ export const RSI_SETUP_CONFIG = {
   pullbackLowMax: Number(process.env.RSI_PULLBACK_LOW_MAX) || 45,
   reboundMin: Number(process.env.RSI_REBOUND_MIN) || 55,
   reboundMax: Number(process.env.RSI_REBOUND_MAX) || 65,
+  /** Second pullback RSI range (entry zone) */
+  pullback2Min: Number(process.env.RSI_PULLBACK2_MIN) || 35,
+  pullback2Max: Number(process.env.RSI_PULLBACK2_MAX) || 60,
   /** Price tolerance % for close ≈ low1_price. E.g. 0.5 = 0.5% */
   priceTolerancePct: Number(process.env.RSI_PRICE_TOLERANCE_PCT) || 0.5,
   /** HIGH confidence: price deviation ≤ this % */

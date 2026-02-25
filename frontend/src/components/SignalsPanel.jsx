@@ -194,7 +194,7 @@ export function SignalsPanel() {
           </table>
         </div>
         <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
-          RSI Setup BUY: peak ≥70 → Low1 → rebound → second pullback (close ≈ low1, RSI 35–45, RSI up, RSI touches SMA). Whole DB checked. Auto-refresh every 60s.
+          RSI Setup BUY: peak ≥70 → Low1 → rebound → second pullback (close ≈ low1, RSI 35–60, RSI up, RSI touches SMA). Whole DB checked. Auto-refresh every 60s.
         </p>
       </div>
     </div>

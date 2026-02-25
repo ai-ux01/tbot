@@ -2,6 +2,33 @@ import { useState, useEffect, useCallback } from 'react';
 import { syncNseHistorical, getKiteInstruments, getStoredKiteSessionId, filterNseDisplayInstruments } from '../api/kite';
 
 const EQ = 'EQ';
+const NSE_SYNC_COMPLETED_KEY = 'nse_sync_completed_tokens';
+
+function getSyncedTokens() {
+  try {
+    if (typeof window === 'undefined') return new Set();
+    const raw = localStorage.getItem(NSE_SYNC_COMPLETED_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function addSyncedToken(token) {
+  if (!token) return;
+  const set = getSyncedTokens();
+  set.add(String(token));
+  try {
+    localStorage.setItem(NSE_SYNC_COMPLETED_KEY, JSON.stringify([...set]));
+  } catch (_) {}
+}
+
+function clearSyncedProgress() {
+  try {
+    if (typeof window !== 'undefined') localStorage.removeItem(NSE_SYNC_COMPLETED_KEY);
+  } catch (_) {}
+}
 
 function useKiteSession() {
   const [hasSession, setHasSession] = useState(() => !!getStoredKiteSessionId());
@@ -37,6 +64,7 @@ export function NseHistoricalSyncPanel() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllProgress, setSyncAllProgress] = useState({ current: 0, total: 0 });
   const [startSerial, setStartSerial] = useState(1);
+  const [syncProgressVersion, setSyncProgressVersion] = useState(0);
   const [hasSession, recheckSession] = useKiteSession();
 
   const SYNC_RANGE_COUNT = 150;
@@ -92,6 +120,7 @@ export function NseHistoricalSyncPanel() {
     setSyncingToken(token);
     try {
       const data = await syncNseHistorical({ instrument_token: token });
+      addSyncedToken(token);
       setLastResult({ ...data, tradingsymbol: inst.tradingsymbol, name: inst.name });
     } catch (e) {
       setError(e?.message ?? 'Sync failed');
@@ -103,19 +132,26 @@ export function NseHistoricalSyncPanel() {
 
   const handleSyncAll = async () => {
     if (!hasSession || filtered.length === 0) return;
+    const syncedSet = getSyncedTokens();
+    const toSync = filtered.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? '')));
+    if (toSync.length === 0) {
+      setError('All visible instruments already synced. Use "Clear progress" to resync from start.');
+      return;
+    }
     setError(null);
     setLastResult(null);
     setSyncingAll(true);
-    setSyncAllProgress({ current: 0, total: filtered.length });
+    setSyncAllProgress({ current: 0, total: toSync.length });
     let lastSuccess = null;
-    for (let i = 0; i < filtered.length; i++) {
-      const inst = filtered[i];
+    for (let i = 0; i < toSync.length; i++) {
+      const inst = toSync[i];
       const token = String(inst.instrument_token ?? '');
       if (!token) continue;
       setSyncingToken(token);
       setSyncAllProgress((p) => ({ ...p, current: i + 1 }));
       try {
         const data = await syncNseHistorical({ instrument_token: token });
+        addSyncedToken(token);
         lastSuccess = { ...data, tradingsymbol: inst.tradingsymbol, name: inst.name };
       } catch (e) {
         setError(e?.message ?? `Sync failed at ${inst.tradingsymbol ?? token}`);
@@ -140,19 +176,26 @@ export function NseHistoricalSyncPanel() {
       setError(`Serial ${serial} is out of range (1–${filtered.length})`);
       return;
     }
+    const syncedSet = getSyncedTokens();
+    const toSync = slice.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? '')));
+    if (toSync.length === 0) {
+      setError('All 150 instruments already synced. Use "Clear progress" to resync.');
+      return;
+    }
     setError(null);
     setLastResult(null);
     setSyncingAll(true);
-    setSyncAllProgress({ current: 0, total: slice.length });
+    setSyncAllProgress({ current: 0, total: toSync.length });
     let lastSuccess = null;
-    for (let i = 0; i < slice.length; i++) {
-      const inst = slice[i];
+    for (let i = 0; i < toSync.length; i++) {
+      const inst = toSync[i];
       const token = String(inst.instrument_token ?? '');
       if (!token) continue;
       setSyncingToken(token);
       setSyncAllProgress((p) => ({ ...p, current: i + 1 }));
       try {
         const data = await syncNseHistorical({ instrument_token: token });
+        addSyncedToken(token);
         lastSuccess = { ...data, tradingsymbol: inst.tradingsymbol, name: inst.name };
       } catch (e) {
         setError(e?.message ?? `Sync failed at ${inst.tradingsymbol ?? token}`);
@@ -167,6 +210,16 @@ export function NseHistoricalSyncPanel() {
     setSyncingAll(false);
     if (lastSuccess) setLastResult(lastSuccess);
   };
+
+  const handleClearProgress = () => {
+    clearSyncedProgress();
+    setSyncProgressVersion((v) => v + 1);
+    setError(null);
+  };
+
+  const syncedSet = getSyncedTokens();
+  const toSyncCount = filtered.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? ''))).length;
+  const alreadySyncedCount = filtered.length - toSyncCount;
 
   if (!hasSession) {
     return (
@@ -210,6 +263,10 @@ export function NseHistoricalSyncPanel() {
             <div className="kpi-value">{filtered.length}</div>
           </div>
           <div className="kpi-card">
+            <div className="kpi-label">Already synced / remaining</div>
+            <div className="kpi-value">{alreadySyncedCount} / {toSyncCount}</div>
+          </div>
+          <div className="kpi-card">
             <div className="kpi-label">Last sync</div>
             <div className="kpi-value">
               {lastResult ? (lastResult.tradingsymbol ?? lastResult.name ?? '—') : '—'}
@@ -250,13 +307,24 @@ export function NseHistoricalSyncPanel() {
           <button
             type="button"
             className="bot-live-button"
-            disabled={listLoading || syncingAll || filtered.length === 0}
+            disabled={listLoading || syncingAll || filtered.length === 0 || toSyncCount === 0}
             onClick={handleSyncAll}
-            title={`Sync all ${filtered.length} visible stocks`}
+            title={toSyncCount > 0 ? `Sync ${toSyncCount} remaining (${alreadySyncedCount} already done)` : 'All synced'}
           >
             {syncingAll
               ? `Syncing ${syncAllProgress.current} / ${syncAllProgress.total}…`
-              : `Sync all (${filtered.length})`}
+              : toSyncCount > 0
+                ? `Sync all (${toSyncCount} remaining)`
+                : 'Sync all (all synced)'}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={syncingAll || alreadySyncedCount === 0}
+            onClick={handleClearProgress}
+            title="Clear stored progress to resync from the beginning"
+          >
+            Clear progress
           </button>
         </div>
 
