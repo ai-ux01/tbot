@@ -1,4 +1,6 @@
+import { useState, useEffect, useCallback } from 'react';
 import { useSignals } from '../context/SignalsContext';
+import { getRsiSetupCombined } from '../api/signals';
 
 function formatTime(iso) {
   if (!iso) return '—';
@@ -25,6 +27,27 @@ export function SignalsPanel() {
     setSignalTypeFilter,
     filteredSignals,
   } = useSignals();
+
+  const [rsiSignals, setRsiSignals] = useState([]);
+  const [rsiLoading, setRsiLoading] = useState(false);
+  const fetchRsi = useCallback(async () => {
+    setRsiLoading(true);
+    try {
+      const data = await getRsiSetupCombined();
+      const buys = (data.signals || []).filter((s) => (s.signal_type || 'HOLD') === 'BUY');
+      setRsiSignals(buys);
+    } catch {
+      setRsiSignals([]);
+    } finally {
+      setRsiLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRsi();
+    const id = setInterval(fetchRsi, 60000);
+    return () => clearInterval(id);
+  }, [fetchRsi]);
 
   return (
     <div className="signals-panel">
@@ -129,6 +152,49 @@ export function SignalsPanel() {
         </div>
         <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
           {filteredSignals.length} shown{search || signalTypeFilter !== 'all' ? ` of ${signals.length}` : ''}. Combined = BUY only if both 1D and 1H BUY; SELL only if both SELL. Auto-refresh every 30s.
+        </p>
+
+        <h3 className="dashboard-card-title" style={{ marginTop: 24, marginBottom: 12 }}>RSI Setup (1D BUY)</h3>
+        <div className="dashboard-table-wrap" style={{ maxHeight: 280 }}>
+          <table className="dashboard-table">
+            <thead>
+              <tr>
+                <th>Instrument</th>
+                <th>Entry</th>
+                <th>Explain</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rsiLoading && rsiSignals.length === 0 ? (
+                <tr>
+                  <td colSpan={3} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
+                    Loading RSI Setup…
+                  </td>
+                </tr>
+              ) : rsiSignals.length === 0 ? (
+                <tr>
+                  <td colSpan={3} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
+                    No RSI Setup BUY signals. Sync candles from NSE Historical Sync, then check RSI Setup tab.
+                  </td>
+                </tr>
+              ) : (
+                rsiSignals.map((s) => (
+                  <tr key={s.tradingsymbol || s.instrument || ''}>
+                    <td>{s.tradingsymbol || s.instrument || '—'}</td>
+                    <td>{s.entryPrice != null ? Number(s.entryPrice).toFixed(2) : '—'}</td>
+                    <td style={{ maxWidth: 400 }}>
+                      <span className="muted" style={{ fontSize: '0.85rem' }}>
+                        {s.explanation || 'No explanation.'}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
+          RSI Setup BUY: peak ≥70 → Low1 → rebound → second pullback (close ≈ low1, RSI 35–45, RSI up, RSI touches SMA). Whole DB checked. Auto-refresh every 60s.
         </p>
       </div>
     </div>

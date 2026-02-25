@@ -142,6 +142,39 @@ router.get('/stored-candles/symbols-rsi', async (req, res) => {
 });
 
 /**
+ * GET /api/kite/stored-candles/symbols?search=&limit=
+ * Search symbols in DB by tradingsymbol or symbol (case-insensitive partial match).
+ */
+router.get('/stored-candles/symbols', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected', hint: 'Set MONGODB_URI in backend/.env' });
+  }
+  const search = (req.query.search || '').trim();
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  try {
+    const filter = {};
+    if (search) {
+      const re = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [
+        { tradingsymbol: re },
+        { symbol: re },
+      ];
+    }
+    const rows = await Candle.aggregate([
+      { $match: filter },
+      { $group: { _id: '$symbol', tradingsymbol: { $first: '$tradingsymbol' } } },
+      { $sort: { tradingsymbol: 1 } },
+      { $limit: limit },
+      { $project: { symbol: '$_id', tradingsymbol: 1, _id: 0 } },
+    ]);
+    res.json({ symbols: rows || [] });
+  } catch (err) {
+    logger.error('Stored candles symbols search failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Search failed' });
+  }
+});
+
+/**
  * POST /api/kite/stored-candles/delete-by-tradingsymbols
  * Body: { tradingsymbols: string[] } — delete all candles whose tradingsymbol is in the list.
  */

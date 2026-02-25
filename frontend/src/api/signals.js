@@ -52,6 +52,30 @@ export async function getSignalsCombined(params = {}) {
 }
 
 /**
+ * GET /api/signals/rsi-setup?symbol=&timeframe=
+ * Evaluate RSI Setup strategy. Returns { signal_type, confidence?, reason?, structure?, count }.
+ */
+export async function getRsiSetup(params = {}) {
+  const q = new URLSearchParams();
+  const symbol = params.symbol ?? params.instrument;
+  if (symbol) q.set('symbol', symbol);
+  if (params.timeframe) q.set('timeframe', params.timeframe);
+  const query = q.toString();
+  return fetchJson('/rsi-setup' + (query ? `?${query}` : ''));
+}
+
+/**
+ * GET /api/signals/rsi-setup/combined?limit=
+ * RSI Setup for all symbols with stored candles (1D only). Returns { signals }.
+ */
+export async function getRsiSetupCombined(params = {}) {
+  const q = new URLSearchParams();
+  if (params.limit != null) q.set('limit', String(params.limit));
+  const query = q.toString();
+  return fetchJson('/rsi-setup/combined' + (query ? `?${query}` : ''));
+}
+
+/**
  * GET /api/signals/indicators?symbol=&timeframe=&limit=
  */
 export async function getIndicators(params = {}) {

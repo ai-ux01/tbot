@@ -41,6 +41,36 @@ function emaSeries(data, period) {
 }
 
 /**
+ * RSI (Wilder smoothing) full series. Returns array (null for first period elements).
+ */
+function rsiSeries(closes, period = RSI_PERIOD) {
+  if (!Array.isArray(closes) || closes.length < period + 1) return [];
+  const out = Array(period).fill(null);
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let j = 1; j <= period; j++) {
+    const ch = closes[j] - closes[j - 1];
+    if (ch > 0) avgGain += ch;
+    else avgLoss -= ch;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period; i < closes.length; i++) {
+    if (i > period) {
+      const ch = closes[i] - closes[i - 1];
+      const g = ch > 0 ? ch : 0;
+      const l = ch < 0 ? -ch : 0;
+      avgGain = (avgGain * (period - 1) + g) / period;
+      avgLoss = (avgLoss * (period - 1) + l) / period;
+    }
+    const rs = avgLoss === 0 ? (avgGain > 0 ? Infinity : 1) : avgGain / avgLoss;
+    const r = avgLoss === 0 && avgGain === 0 ? 50 : (avgGain === 0 ? 0 : 100 - 100 / (1 + rs));
+    out.push(Math.min(100, Math.max(0, r)));
+  }
+  return out;
+}
+
+/**
  * RSI (Wilder smoothing). Returns last value or null.
  */
 function rsi(closes, period = RSI_PERIOD) {
@@ -218,4 +248,124 @@ export function computeIndicators(ohlcv) {
   };
 }
 
-export default { computeIndicators };
+/**
+ * Rolling SMA for each index. Returns array (null for first period-1 elements).
+ */
+function rollingSma(arr, period) {
+  if (!Array.isArray(arr) || arr.length < period) return [];
+  const out = Array(period - 1).fill(null);
+  for (let i = period - 1; i < arr.length; i++) {
+    const slice = arr.slice(i - period + 1, i + 1);
+    out.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return out;
+}
+
+/**
+ * SMA of RSI series. Returns array aligned with input (null where insufficient valid values).
+ * @param {number[]} rsi - RSI values (may contain null)
+ * @param {number} period
+ * @returns {number[]}
+ */
+function rsiSmaSeries(rsi, period = 14) {
+  if (!Array.isArray(rsi) || rsi.length < period) return rsi?.map(() => null) ?? [];
+  const out = [];
+  for (let i = 0; i < rsi.length; i++) {
+    if (i < period - 1) {
+      out.push(null);
+      continue;
+    }
+    const slice = rsi.slice(i - period + 1, i + 1);
+    const valid = slice.filter((v) => v != null && Number.isFinite(v));
+    if (valid.length === period) {
+      out.push(valid.reduce((a, b) => a + b, 0) / period);
+    } else {
+      out.push(null);
+    }
+  }
+  return out;
+}
+
+/**
+ * ATR (Average True Range) full series. Wilder smoothing.
+ * TR = max(H-L, |H-prevClose|, |L-prevClose|). ATR = smoothed TR.
+ * @param {Array<{ high: number, low: number, close: number }>} ohlcv
+ * @param {number} period
+ * @returns {number[]} Array aligned by index (null for first period elements)
+ */
+export function atrSeries(ohlcv, period = 14) {
+  if (!Array.isArray(ohlcv) || ohlcv.length < period + 1) return [];
+  const trList = [];
+  for (let i = 1; i < ohlcv.length; i++) {
+    const prev = ohlcv[i - 1];
+    const curr = ohlcv[i];
+    const high = curr.high ?? curr.close ?? 0;
+    const low = curr.low ?? curr.close ?? 0;
+    const prevClose = prev.close ?? prev.open ?? 0;
+    const tr = Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    );
+    trList.push(tr);
+  }
+  const out = Array(period).fill(null);
+  let atr = trList.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out.push(atr);
+  for (let i = period; i < trList.length; i++) {
+    atr = (atr * (period - 1) + trList[i]) / period;
+    out.push(atr);
+  }
+  return out;
+}
+
+/**
+ * Full indicator series for strategies (RSI setup etc). Returns arrays aligned by index.
+ * @param {Array<{ open, high, low, close, volume? }>} ohlcv
+ * @param {{ atrPeriod?: number } } [opts]
+ * @returns {{ close: number[], rsi: number[], ema20: number[], ema50: number[], volume: number[], avgVolume: number[], atr: number[] }}
+ */
+export function computeIndicatorSeries(ohlcv, opts = {}) {
+  const atrPeriod = opts.atrPeriod ?? 14;
+  if (!Array.isArray(ohlcv) || ohlcv.length === 0) {
+    return { close: [], high: [], rsi: [], rsiSma: [], ema20: [], ema50: [], volume: [], avgVolume: [], atr: [] };
+  }
+  const close = [];
+  const high = [];
+  const volume = [];
+  const validOhlcv = [];
+  ohlcv.forEach((c) => {
+    const cl = Number(c.close);
+    if (Number.isFinite(cl)) {
+      close.push(cl);
+      high.push(Number(c.high) ?? cl);
+      volume.push(Number(c.volume) || 0);
+      validOhlcv.push({
+        open: Number(c.open) ?? cl,
+        high: Number(c.high) ?? cl,
+        low: Number(c.low) ?? cl,
+        close: cl,
+        volume: Number(c.volume) || 0,
+      });
+    }
+  });
+  const ema20Arr = emaSeries(close, 20);
+  const ema50Arr = emaSeries(close, 50);
+  const rsiArr = rsiSeries(close, RSI_PERIOD);
+  const rsiSmaArr = rsiSmaSeries(rsiArr, RSI_PERIOD);
+  const avgVolume = rollingSma(volume, VOLUME_LOOKBACK);
+  const atrArr = atrSeries(validOhlcv, atrPeriod);
+  return {
+    close,
+    high,
+    rsi: rsiArr,
+    rsiSma: rsiSmaArr,
+    ema20: ema20Arr,
+    ema50: ema50Arr,
+    volume,
+    avgVolume,
+    atr: atrArr,
+  };
+}
+
+export default { computeIndicators, computeIndicatorSeries };

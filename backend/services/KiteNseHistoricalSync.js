@@ -46,6 +46,31 @@ async function getLatestCandleTime(symbol, timeframe) {
 }
 
 /**
+ * Get the most recent updatedAt for any candle of this symbol. Returns null if none.
+ */
+async function getLastUpdatedAt(symbol) {
+  if (!isDbConnected()) return null;
+  const doc = await Candle.findOne({ symbol })
+    .sort({ updatedAt: -1 })
+    .select('updatedAt')
+    .lean();
+  if (!doc?.updatedAt) return null;
+  return doc.updatedAt instanceof Date ? doc.updatedAt : new Date(doc.updatedAt);
+}
+
+/**
+ * True if the given date is "today" in IST (Asia/Kolkata).
+ */
+function isTodayIST(date) {
+  if (!date || !(date instanceof Date)) return false;
+  const now = new Date();
+  const opts = { timeZone: 'Asia/Kolkata' };
+  const dateStr = date.toLocaleDateString('en-CA', opts);
+  const todayStr = now.toLocaleDateString('en-CA', opts);
+  return dateStr === todayStr;
+}
+
+/**
  * True if we have data up to "yesterday" (UTC), so incremental sync (today only) is safe.
  */
 function isUpToDate(latestTime, now) {
@@ -245,6 +270,10 @@ export async function syncNseEquityHistorical(session, options = {}) {
     const token = String(inst.instrument_token ?? '');
     if (!token) continue;
     try {
+      const lastUpdated = await getLastUpdatedAt(token);
+      if (lastUpdated && isTodayIST(lastUpdated)) {
+        continue;
+      }
       const [latestDayTime, latest60mTime] = await Promise.all([
         getLatestCandleTime(token, 'day'),
         getLatestCandleTime(token, '60minute'),

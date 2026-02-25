@@ -20,7 +20,7 @@ export function SignalsProvider({ children, activeTab }) {
     setError(null);
     setLoading(true);
     try {
-      const data = await getSignalsCombined({ limit: 200 });
+      const data = await getSignalsCombined({ limit: 2000 });
       setSignals(Array.isArray(data.signals) ? data.signals : []);
     } catch (e) {
       setError(e?.message ?? 'Failed to load signals');

@@ -5,8 +5,33 @@
 import { Router } from 'express';
 import { Signal } from '../database/models/Signal.js';
 import { isDbConnected } from '../database/connection.js';
-import { computeIndicators } from '../services/IndicatorService.js';
+import { computeIndicators, computeIndicatorSeries } from '../services/IndicatorService.js';
+import { rsiSwingBuyStrategy } from '../services/strategies/RsiSetupStrategy.js';
 import { evaluateAndPersistSignal, getCandlesForSignal, getSymbolsWithStoredCandles } from '../services/SignalEngine.js';
+import { evaluate as evaluateRsiSetup, runRsiSetupBacktest } from '../services/rsi-setup/index.js';
+
+async function evaluateRsiSetupForSymbol(symbol, tradingsymbol, timeframe) {
+  const candles = await getCandlesForSignal(symbol, timeframe, 500);
+  if (candles.length < 50) return null;
+  const ohlcv = candles.map((c) => ({
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume ?? 0,
+  }));
+  const result = evaluateRsiSetup(ohlcv);
+  const confidenceFromScore = result.confidenceScore != null ? result.confidenceScore / 100 : null;
+  return {
+    signal_type: result.signal === 'BUY' ? 'BUY' : 'HOLD',
+    confidence: confidenceFromScore ?? null,
+    explanation: result.explanation || result.reason || 'No explanation available.',
+    entryPrice: result.entryPrice ?? null,
+    confidenceScore: result.confidenceScore ?? null,
+    confidenceLabel: result.confidenceLabel ?? null,
+    structure: result.structure ?? null,
+  };
+}
 import { trainModel } from '../services/PatternService.js';
 import { getAlertService } from '../services/AlertService.js';
 import { logger } from '../logger.js';
@@ -49,7 +74,7 @@ router.get('/combined', async (req, res) => {
     return res.status(503).json({ error: 'Database not connected' });
   }
   try {
-    const limit = Math.min(500, Math.max(50, parseInt(req.query.limit, 10) || 200));
+    const limit = Math.min(2000, Math.max(50, parseInt(req.query.limit, 10) || 200));
     const instrumentFilter = (req.query.instrument || '').trim();
     const raw = await Signal.find({
       timeframe: { $in: ['day', '60minute'] },
@@ -143,6 +168,137 @@ router.get('/indicators', async (req, res) => {
   } catch (err) {
     logger.error('Indicators failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'Indicators failed' });
+  }
+});
+
+/**
+ * GET /api/signals/rsi-setup
+ * Evaluate RSI Setup strategy for symbol+timeframe. Query: symbol, timeframe (default day).
+ * Returns full signal object: entry, stop, target, confidence, structure.
+ */
+router.get('/rsi-setup', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const symbol = (req.query.symbol || req.query.instrument || '').trim();
+    const timeframe = (req.query.timeframe || 'day').trim();
+    if (!symbol) {
+      return res.status(400).json({ error: 'symbol or instrument required' });
+    }
+    const candles = await getCandlesForSignal(symbol, timeframe, 500);
+    if (candles.length < 50) {
+      return res.json({
+        signal: 'HOLD',
+        signal_type: 'HOLD',
+        message: `Insufficient candles (${candles.length}, need ≥50)`,
+        count: candles.length,
+      });
+    }
+    const ohlcv = candles.map((c) => ({
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 0,
+    }));
+
+    const result = evaluateRsiSetup(ohlcv);
+    const out = {
+      ...result,
+      signal_type: result.signal === 'BUY' ? 'BUY' : 'HOLD',
+      count: candles.length,
+    };
+    res.json(out);
+  } catch (err) {
+    logger.error('RSI Setup failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'RSI Setup failed' });
+  }
+});
+
+/**
+ * GET /api/signals/rsi-setup/combined
+ * One row per instrument: RSI Setup strategy for 1D only.
+ */
+router.get('/rsi-setup/combined', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const symbols = await getSymbolsWithStoredCandles();
+    const reqLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(reqLimit) && reqLimit > 0 ? Math.min(5000, reqLimit) : symbols.length;
+    const combined = [];
+    const now = new Date();
+    for (let i = 0; i < Math.min(symbols.length, limit); i++) {
+      const { symbol: sym, tradingsymbol: ts } = symbols[i];
+      const inst = sym || ts;
+      if (!inst) continue;
+      try {
+        const result = await evaluateRsiSetupForSymbol(sym, ts, 'day');
+        if (!result) continue;
+
+        combined.push({
+          instrument: sym,
+          tradingsymbol: ts || sym,
+          signal_type: result.signal_type || 'HOLD',
+          confidence: result.confidence ?? null,
+          explanation: result.explanation || 'No explanation available.',
+          entryPrice: result.entryPrice ?? null,
+          confidenceScore: result.confidenceScore ?? null,
+          confidenceLabel: result.confidenceLabel ?? null,
+          structure: result.structure ?? null,
+          createdAt: now,
+        });
+      } catch (err) {
+        logger.warn('RSI Setup combined skip', { symbol: inst, error: err?.message });
+      }
+    }
+    combined.sort((a, b) => {
+      const ord = { BUY: 0, HOLD: 1, SELL: 2 };
+      return (ord[a.signal_type] ?? 1) - (ord[b.signal_type] ?? 1);
+    });
+    res.json({ signals: combined, checkedCount: Math.min(symbols.length, limit) });
+  } catch (err) {
+    logger.error('RSI Setup combined failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'RSI Setup combined failed' });
+  }
+});
+
+/**
+ * POST /api/signals/rsi-setup/backtest
+ * Body: { symbol } - runs RSI Setup backtest on symbol's stored daily candles
+ */
+router.post('/rsi-setup/backtest', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const symbol = (req.body?.symbol ?? req.query?.symbol ?? '').trim();
+    if (!symbol) {
+      return res.status(400).json({ error: 'symbol required' });
+    }
+    const candles = await getCandlesForSignal(symbol, 'day', 500);
+    if (candles.length < 50) {
+      return res.status(422).json({
+        error: `Insufficient candles (${candles.length}, need ≥50)`,
+        count: candles.length,
+      });
+    }
+    const ohlcv = candles.map((c) => ({
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume ?? 0,
+      time: c.time,
+    }));
+
+    const result = runRsiSetupBacktest(ohlcv);
+    res.json({ symbol, ...result });
+  } catch (err) {
+    logger.error('RSI Setup backtest failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'RSI Setup backtest failed' });
   }
 });
 

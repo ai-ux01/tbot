@@ -1,13 +1,20 @@
 /**
  * Zerodha Kite Connect API – login URL, profile, margins, logout.
- * Uses X-Kite-Session-Id header from sessionStorage (set after redirect) so it works cross-origin (e.g. frontend 5173, backend 4000).
+ * Uses X-Kite-Session-Id header from localStorage (set after redirect) so it works cross-origin and across tabs.
  */
 
 const KITE_SID_KEY = 'kite_sid';
 
 export function getStoredKiteSessionId() {
   try {
-    return typeof window !== 'undefined' ? sessionStorage.getItem(KITE_SID_KEY) : null;
+    if (typeof window === 'undefined') return null;
+    let sid = localStorage.getItem(KITE_SID_KEY);
+    if (!sid && sessionStorage.getItem(KITE_SID_KEY)) {
+      sid = sessionStorage.getItem(KITE_SID_KEY);
+      localStorage.setItem(KITE_SID_KEY, sid);
+      sessionStorage.removeItem(KITE_SID_KEY);
+    }
+    return sid;
   } catch {
     return null;
   }
@@ -16,8 +23,8 @@ export function getStoredKiteSessionId() {
 export function setStoredKiteSessionId(sid) {
   try {
     if (typeof window !== 'undefined') {
-      if (sid) sessionStorage.setItem(KITE_SID_KEY, sid);
-      else sessionStorage.removeItem(KITE_SID_KEY);
+      if (sid) localStorage.setItem(KITE_SID_KEY, sid);
+      else localStorage.removeItem(KITE_SID_KEY);
     }
   } catch (_) {}
 }
@@ -107,11 +114,19 @@ export async function getKiteMarginsSegment(segment) {
   return kiteFetch(`/margins/${encodeURIComponent(segment)}`);
 }
 
+const INVALID_KEYWORDS = [
+  '%',    // Bonds (6.61% etc)
+  'SDL',  // State Dev Loans
+  'INAV', // ETF NAV
+  'ETF',  // ETFs
+  'SG',   // Govt securities
+  'NIFTY',// All NIFTY instruments
+];
+
 /**
  * NSE display filter: keep only instruments that match
  * exchange=NSE, segment=NSE, instrument_type=EQ, lot_size=1,
- * name non-empty, no "%" or "SDL" in name,
- * and tradingsymbol excludes -SG, ETF, BE, BZ.
+ * name length > 3, and no invalid keywords in name or tradingsymbol.
  * @param {Array<{ exchange?: string, segment?: string, instrument_type?: string, lot_size?: string|number, name?: string, tradingsymbol?: string }>} list
  * @returns {Array} Filtered list (items that pass the filter).
  */
@@ -123,14 +138,9 @@ export function filterNseDisplayInstruments(list) {
     if (String(i.instrument_type || '').toUpperCase() !== 'EQ') return false;
     if (Number(i.lot_size) !== 1) return false;
     const name = String(i.name || '').trim();
-    if (!name) return false;
-    if (name.includes('%')) return false;
-    if (name.includes('SDL')) return false;
-    const ts = String(i.tradingsymbol || '');
-    if (ts.includes('-SG')) return false;
-    if (ts.includes('ETF')) return false;
-    if (ts.includes('BE')) return false;
-    if (ts.includes('BZ')) return false;
+    if (name.length <= 3) return false;
+    const symbol = String(i.tradingsymbol || i.instrument_token || '').trim();
+    if (INVALID_KEYWORDS.some((k) => name.includes(k) || symbol.includes(k))) return false;
     return true;
   });
 }
@@ -176,6 +186,21 @@ export async function getStoredCandlesSummary() {
   const res = await fetch(url, { credentials: 'include', headers: kiteHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.hint || 'Failed to load summary');
+  return data;
+}
+
+/**
+ * GET /api/kite/stored-candles/symbols?search=&limit=
+ * Search symbols in DB by tradingsymbol or symbol. Returns { symbols: Array<{ symbol, tradingsymbol }> }.
+ */
+export async function getStoredCandlesSymbols(params = {}) {
+  const sp = new URLSearchParams();
+  if (params.search) sp.set('search', params.search);
+  if (params.limit != null) sp.set('limit', String(params.limit));
+  const url = getKiteBaseUrl() + '/api/kite/stored-candles/symbols' + (sp.toString() ? '?' + sp.toString() : '');
+  const res = await fetch(url, { credentials: 'include', headers: kiteHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.hint || 'Failed to search symbols');
   return data;
 }
 

@@ -1,7 +1,31 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { syncNseHistorical, getKiteInstruments, getStoredKiteSessionId, filterNseDisplayInstruments } from '../api/kite';
 
 const EQ = 'EQ';
+
+function useKiteSession() {
+  const [hasSession, setHasSession] = useState(() => !!getStoredKiteSessionId());
+
+  const recheck = useCallback(() => {
+    setHasSession(!!getStoredKiteSessionId());
+  }, []);
+
+  useEffect(() => {
+    const onProfile = () => setHasSession(!!getStoredKiteSessionId());
+    window.addEventListener('kite-connect-profile', onProfile);
+    return () => window.removeEventListener('kite-connect-profile', onProfile);
+  }, []);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') setHasSession(!!getStoredKiteSessionId());
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  return [hasSession, recheck];
+}
 
 export function NseHistoricalSyncPanel() {
   const [instruments, setInstruments] = useState([]);
@@ -13,9 +37,9 @@ export function NseHistoricalSyncPanel() {
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllProgress, setSyncAllProgress] = useState({ current: 0, total: 0 });
   const [startSerial, setStartSerial] = useState(1);
+  const [hasSession, recheckSession] = useKiteSession();
 
   const SYNC_RANGE_COUNT = 150;
-  const hasSession = !!getStoredKiteSessionId();
 
   useEffect(() => {
     if (!hasSession) {
@@ -154,8 +178,11 @@ export function NseHistoricalSyncPanel() {
         <div className="dashboard-empty">
           <p>Not connected to Kite.</p>
           <p className="muted" style={{ fontSize: '0.85rem' }}>
-            Go to <strong>Trading</strong> and log in with Kite first.
+            Use <strong>Login with Kite</strong> in the header, or go to <strong>More</strong> → Kite Connect to log in.
           </p>
+          <button type="button" className="btn-secondary" onClick={recheckSession} style={{ marginTop: 8 }}>
+            Recheck connection
+          </button>
         </div>
       </div>
     );

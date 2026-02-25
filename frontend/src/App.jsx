@@ -16,12 +16,14 @@ import { StoredDataPanel } from './components/StoredDataPanel';
 import { SignalsPanel } from './components/SignalsPanel';
 import { SignalsSidebarBlock } from './components/SignalsSidebarBlock';
 import { TrainAIPanel } from './components/TrainAIPanel';
+import { RsiSetupPanel } from './components/RsiSetupPanel';
 import { SignalsProvider } from './context/SignalsContext';
-import { getKiteProfile, getKiteLoginUrl, getStoredKiteSessionId, kiteLogout } from './api/kite';
+import { getKiteProfile, getKiteLoginUrl, getStoredKiteSessionId, setStoredKiteSessionId, kiteLogout } from './api/kite';
 import './App.css';
 
 const TABS = [
   { id: 'signals', label: 'AI Signals' },
+  { id: 'rsi-setup', label: 'RSI Setup' },
   { id: 'train-ai', label: 'Train AI' },
   { id: 'trading', label: 'Trading' },
   { id: 'orders', label: 'Orders & Journal' },
@@ -36,6 +38,7 @@ const PAGE_TITLES = {
   'nse-sync': 'NSE Sync',
   'stored-data': 'Stored Data',
   signals: 'AI Signals',
+  'rsi-setup': 'RSI Setup',
   'train-ai': 'Train AI',
   more: 'More',
 };
@@ -46,6 +49,7 @@ function AppContent() {
   const [kiteUserName, setKiteUserName] = useState(null);
   const [kiteLoggingOut, setKiteLoggingOut] = useState(false);
   const [kiteLoggingIn, setKiteLoggingIn] = useState(false);
+  const [kiteSessionVersion, setKiteSessionVersion] = useState(0);
 
   const handleKiteAction = async () => {
     if (kiteUserName) {
@@ -85,7 +89,7 @@ function AppContent() {
         setKiteUserName(p?.user_name ?? p?.user_id ?? null);
       })
       .catch(() => setKiteUserName(null));
-  }, [isLoggedIn, activeTab]);
+  }, [isLoggedIn, activeTab, kiteSessionVersion]);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -93,6 +97,29 @@ function AppContent() {
     window.addEventListener('kite-connect-profile', onKiteProfile);
     return () => window.removeEventListener('kite-connect-profile', onKiteProfile);
   }, [isLoggedIn]);
+
+  // Handle Kite redirect: backend sends ?kite=success&kite_sid=... — store session and force profile refetch
+  useEffect(() => {
+    const search = window.location.search || '';
+    const hash = window.location.hash || '';
+    const hashQuery = hash.includes('?') ? hash.split('?')[1] : '';
+    const params = new URLSearchParams(search + (hashQuery ? '&' + hashQuery : ''));
+    const kite = params.get('kite');
+    const kiteSid = params.get('kite_sid');
+    if (kite !== 'success' || !kiteSid) return;
+    const sid = decodeURIComponent(kiteSid);
+    setStoredKiteSessionId(sid);
+    setKiteSessionVersion((v) => v + 1);
+    window.dispatchEvent(new CustomEvent('kite-connect-profile', { detail: {} }));
+    const k = ['kite', 'kite_sid'];
+    const u = new URL(window.location.href);
+    k.forEach((key) => u.searchParams.delete(key));
+    const hashParts = (u.hash || '#').split('?');
+    const hashParams = new URLSearchParams(hashParts[1] || '');
+    k.forEach((key) => hashParams.delete(key));
+    const newHash = hashParts[0] + (hashParams.toString() ? '?' + hashParams.toString() : '');
+    window.history.replaceState({}, '', u.pathname + u.search + (newHash !== '#' ? newHash : ''));
+  }, []);
 
   if (!isLoggedIn) {
     return (
@@ -158,9 +185,9 @@ function AppContent() {
           <div className="dashboard-page">
             {activeTab === 'trading' && (
               <div className="app-tab-panel trading-panel">
-                {/* <section className="section login-section">
+                <section className="section login-section">
                   <KiteConnectPanel />
-                </section> */}
+                </section>
                 <section className="section">
                   <h2>Swing bot</h2>
                   <SwingPanel />
@@ -198,6 +225,12 @@ function AppContent() {
             {activeTab === 'signals' && (
               <div className="app-tab-panel">
                 <SignalsPanel />
+              </div>
+            )}
+
+            {activeTab === 'rsi-setup' && (
+              <div className="app-tab-panel">
+                <RsiSetupPanel />
               </div>
             )}
 
