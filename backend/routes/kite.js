@@ -101,6 +101,33 @@ router.get('/stored-candles/summary', async (req, res) => {
 });
 
 /**
+ * GET /api/kite/stored-candles/last-updated
+ * Returns last synced (max updatedAt) per symbol. No Kite session.
+ * Response: { items: Array<{ symbol, tradingsymbol, lastUpdated }> } (lastUpdated as ISO string).
+ */
+router.get('/stored-candles/last-updated', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected', hint: 'Set MONGODB_URI in backend/.env' });
+  }
+  try {
+    const rows = await Candle.aggregate([
+      { $group: { _id: '$symbol', tradingsymbol: { $first: '$tradingsymbol' }, lastUpdated: { $max: '$updatedAt' } } },
+      { $sort: { _id: 1 } },
+      { $project: { symbol: '$_id', tradingsymbol: 1, lastUpdated: 1, _id: 0 } },
+    ]);
+    const items = (rows || []).map((r) => ({
+      symbol: r.symbol,
+      tradingsymbol: r.tradingsymbol || r.symbol,
+      lastUpdated: r.lastUpdated ? (r.lastUpdated instanceof Date ? r.lastUpdated.toISOString() : new Date(r.lastUpdated).toISOString()) : null,
+    }));
+    res.json({ items });
+  } catch (err) {
+    logger.error('Stored candles last-updated failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'last-updated failed' });
+  }
+});
+
+/**
  * GET /api/kite/stored-candles/symbols-rsi?timeframe=day&period=14
  * Returns [{ symbol, tradingsymbol, rsi }] for each symbol (RSI from last candles). No Kite session.
  */
@@ -222,6 +249,72 @@ router.get('/stored-candles', async (req, res) => {
   } catch (err) {
     logger.error('Stored candles query failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'Query failed' });
+  }
+});
+
+/**
+ * POST /api/kite/stored-candles/push
+ * Push candles (e.g. from WebSocket) into stored historical data. Upserts by (symbol, timeframe, time).
+ * Body: { candles: [ { symbol, tradingsymbol?, timeframe, time, open, high, low, close, volume? } ] }
+ * time: unix seconds, ms, or ISO string.
+ */
+router.post('/stored-candles/push', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected', hint: 'Set MONGODB_URI in backend/.env' });
+  }
+  try {
+    const list = req.body?.candles;
+    if (!Array.isArray(list) || list.length === 0) {
+      return res.status(400).json({ error: 'body.candles required (non-empty array)' });
+    }
+    const ops = [];
+    for (const c of list) {
+      const symbol = String(c.symbol ?? '').trim();
+      if (!symbol) continue;
+      const timeframe = String(c.timeframe ?? '60minute').trim() || '60minute';
+      let time = c.time;
+      if (time == null) continue;
+      if (typeof time === 'number') {
+        time = time < 1e12 ? new Date(time * 1000) : new Date(time);
+      } else {
+        time = new Date(time);
+      }
+      if (Number.isNaN(time.getTime())) continue;
+      const open = Number(c.open);
+      const high = Number(c.high);
+      const low = Number(c.low);
+      const close = Number(c.close);
+      if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) continue;
+      const tradingsymbol = (c.tradingsymbol != null && String(c.tradingsymbol).trim()) ? String(c.tradingsymbol).trim() : undefined;
+      const update = {
+        symbol,
+        timeframe,
+        time,
+        open,
+        high,
+        low,
+        close,
+        volume: Number.isFinite(Number(c.volume)) ? Number(c.volume) : 0,
+        updatedAt: new Date(),
+      };
+      if (tradingsymbol) update.tradingsymbol = tradingsymbol;
+      ops.push({
+        updateOne: {
+          filter: { symbol, timeframe, time },
+          update: { $set: update },
+          upsert: true,
+        },
+      });
+    }
+    if (ops.length === 0) {
+      return res.status(400).json({ error: 'No valid candles in body.candles' });
+    }
+    await Candle.bulkWrite(ops);
+    logger.info('Stored candles push', { count: ops.length });
+    res.json({ ok: true, pushed: ops.length });
+  } catch (err) {
+    logger.error('Stored candles push failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Push failed' });
   }
 });
 

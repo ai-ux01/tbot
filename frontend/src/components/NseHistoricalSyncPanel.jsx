@@ -3,6 +3,7 @@ import { syncNseHistorical, getKiteInstruments, getStoredKiteSessionId, filterNs
 
 const EQ = 'EQ';
 const NSE_SYNC_COMPLETED_KEY = 'nse_sync_completed_tokens';
+const NSE_SYNC_STATUS_KEY = 'nse_sync_status';
 
 function getSyncedTokens() {
   try {
@@ -13,6 +14,29 @@ function getSyncedTokens() {
   } catch {
     return new Set();
   }
+}
+
+function getNseSyncStatus() {
+  try {
+    if (typeof window === 'undefined') return { running: false, current: 0, total: 0 };
+    const raw = localStorage.getItem(NSE_SYNC_STATUS_KEY);
+    const o = raw ? JSON.parse(raw) : {};
+    return {
+      running: !!o.running,
+      current: Number(o.current) || 0,
+      total: Number(o.total) || 0,
+    };
+  } catch {
+    return { running: false, current: 0, total: 0 };
+  }
+}
+
+function setNseSyncStatus(status) {
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(NSE_SYNC_STATUS_KEY, JSON.stringify(status));
+    }
+  } catch (_) {}
 }
 
 function addSyncedToken(token) {
@@ -26,7 +50,10 @@ function addSyncedToken(token) {
 
 function clearSyncedProgress() {
   try {
-    if (typeof window !== 'undefined') localStorage.removeItem(NSE_SYNC_COMPLETED_KEY);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(NSE_SYNC_COMPLETED_KEY);
+      localStorage.removeItem(NSE_SYNC_STATUS_KEY);
+    }
   } catch (_) {}
 }
 
@@ -68,6 +95,24 @@ export function NseHistoricalSyncPanel() {
   const [hasSession, recheckSession] = useKiteSession();
 
   const SYNC_RANGE_COUNT = 150;
+
+  useEffect(() => {
+    const status = getNseSyncStatus();
+    if (status.running && status.total > 0) {
+      setSyncingAll(true);
+      setSyncAllProgress({ current: status.current, total: status.total });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!syncingAll) return;
+    const id = setInterval(() => {
+      const status = getNseSyncStatus();
+      setSyncAllProgress((p) => ({ ...p, current: status.current, total: status.total }));
+      if (!status.running) setSyncingAll(false);
+    }, 1500);
+    return () => clearInterval(id);
+  }, [syncingAll]);
 
   useEffect(() => {
     if (!hasSession) {
@@ -142,6 +187,7 @@ export function NseHistoricalSyncPanel() {
     setLastResult(null);
     setSyncingAll(true);
     setSyncAllProgress({ current: 0, total: toSync.length });
+    setNseSyncStatus({ running: true, current: 0, total: toSync.length });
     let lastSuccess = null;
     for (let i = 0; i < toSync.length; i++) {
       const inst = toSync[i];
@@ -149,6 +195,7 @@ export function NseHistoricalSyncPanel() {
       if (!token) continue;
       setSyncingToken(token);
       setSyncAllProgress((p) => ({ ...p, current: i + 1 }));
+      setNseSyncStatus({ running: true, current: i + 1, total: toSync.length });
       try {
         const data = await syncNseHistorical({ instrument_token: token });
         addSyncedToken(token);
@@ -164,6 +211,7 @@ export function NseHistoricalSyncPanel() {
     }
     setSyncingToken(null);
     setSyncingAll(false);
+    setNseSyncStatus({ running: false, current: 0, total: 0 });
     if (lastSuccess) setLastResult(lastSuccess);
   };
 
@@ -186,6 +234,7 @@ export function NseHistoricalSyncPanel() {
     setLastResult(null);
     setSyncingAll(true);
     setSyncAllProgress({ current: 0, total: toSync.length });
+    setNseSyncStatus({ running: true, current: 0, total: toSync.length });
     let lastSuccess = null;
     for (let i = 0; i < toSync.length; i++) {
       const inst = toSync[i];
@@ -193,6 +242,7 @@ export function NseHistoricalSyncPanel() {
       if (!token) continue;
       setSyncingToken(token);
       setSyncAllProgress((p) => ({ ...p, current: i + 1 }));
+      setNseSyncStatus({ running: true, current: i + 1, total: toSync.length });
       try {
         const data = await syncNseHistorical({ instrument_token: token });
         addSyncedToken(token);
@@ -208,11 +258,15 @@ export function NseHistoricalSyncPanel() {
     }
     setSyncingToken(null);
     setSyncingAll(false);
+    setNseSyncStatus({ running: false, current: 0, total: 0 });
     if (lastSuccess) setLastResult(lastSuccess);
   };
 
   const handleClearProgress = () => {
     clearSyncedProgress();
+    setSyncingAll(false);
+    setSyncAllProgress({ current: 0, total: 0 });
+    setSyncingToken(null);
     setSyncProgressVersion((v) => v + 1);
     setError(null);
   };
@@ -250,7 +304,7 @@ export function NseHistoricalSyncPanel() {
       <div className="dashboard-card">
         <h2 className="dashboard-card-title">NSE Historical Sync</h2>
         <p className="dashboard-card-subtitle">
-          List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock or run batch sync.
+          List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock or run batch sync. Sync continues in the background if you leave this page.
         </p>
 
         <div className="kpi-grid">
@@ -320,9 +374,9 @@ export function NseHistoricalSyncPanel() {
           <button
             type="button"
             className="btn-secondary"
-            disabled={syncingAll || alreadySyncedCount === 0}
+            disabled={listLoading}
             onClick={handleClearProgress}
-            title="Clear stored progress to resync from the beginning"
+            title="Clear stored sync progress (completed tokens + batch status). Use when filters hide synced rows, or sync looks stuck."
           >
             Clear progress
           </button>

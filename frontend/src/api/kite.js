@@ -190,6 +190,18 @@ export async function getStoredCandlesSummary() {
 }
 
 /**
+ * GET /api/kite/stored-candles/last-updated
+ * Returns last synced date per symbol. Response: { items: Array<{ symbol, tradingsymbol, lastUpdated }> }.
+ */
+export async function getStoredCandlesLastUpdated() {
+  const url = getKiteBaseUrl() + '/api/kite/stored-candles/last-updated';
+  const res = await fetch(url, { credentials: 'include', headers: kiteHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || data.hint || 'Failed to load last updated');
+  return data;
+}
+
+/**
  * GET /api/kite/stored-candles/symbols?search=&limit=
  * Search symbols in DB by tradingsymbol or symbol. Returns { symbols: Array<{ symbol, tradingsymbol }> }.
  */
@@ -233,6 +245,24 @@ export async function getStoredCandles(params = {}) {
   const res = await fetch(url, { credentials: 'include', headers: kiteHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || data.hint || 'Failed to load candles');
+  return data;
+}
+
+/**
+ * POST /api/kite/stored-candles/push
+ * Push candles (e.g. from WebSocket) into stored historical data. Body: { candles: [ { symbol, tradingsymbol?, timeframe, time, open, high, low, close, volume? } ] }
+ * time: unix seconds or ISO string.
+ */
+export async function pushStoredCandles(candles) {
+  const url = getKiteBaseUrl() + '/api/kite/stored-candles/push';
+  const res = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { ...kiteHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candles }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Push failed');
   return data;
 }
 

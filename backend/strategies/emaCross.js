@@ -1,41 +1,57 @@
 import { StrategyState, StrategySignals } from './constants.js';
 
-const EMA_FAST = 9;
-const EMA_SLOW = 21;
-const MAX_CLOSES = 100;
+const DEFAULT_FAST = 9;
+const DEFAULT_SLOW = 21;
+const MAX_CLOSES = 500;
 
 export const name = 'emaCross';
 
 /**
  * Create an EMA crossover strategy instance (one per symbol/context).
- * @param {Object} [options] - Strategy options (reserved)
+ * @param {Object} [options] - { fast: number, slow: number, filterSlow: number } (default 9, 21; use 10, 20, 50 for 10/20 cross with EMA 20 > EMA 50)
+ *   When filterSlow (e.g. 50) is set, BUY only when fast crosses above slow AND slow EMA is above filter EMA.
  * @returns {{ name: string, onCandle: (candle: object, context: object) => object | null, getState: () => string }}
  */
 export function create(options = {}) {
+  const fast = Math.max(2, parseInt(options.fast, 10) || DEFAULT_FAST);
+  const slow = Math.max(fast + 1, parseInt(options.slow, 10) || DEFAULT_SLOW);
+  const filterSlow = Math.max(slow + 1, parseInt(options.filterSlow ?? options.ema50, 10) || 0);
+
   let state = StrategyState.FLAT;
   const closes = [];
-  let ema9 = null;
-  let ema21 = null;
-  let prevEma9 = null;
-  let prevEma21 = null;
+  let emaFast = null;
+  let emaSlow = null;
+  let emaFilter = null;
+  let prevEmaFast = null;
+  let prevEmaSlow = null;
   let lastSignal = null;
 
   function computeEMAs() {
     const n = closes.length;
-    if (n < EMA_SLOW) return;
-    const k9 = 2 / (EMA_FAST + 1);
-    const k21 = 2 / (EMA_SLOW + 1);
-    if (ema9 == null) {
-      const start9 = Math.max(0, n - EMA_FAST);
-      ema9 = sma(closes.slice(start9, start9 + EMA_FAST));
+    if (n < slow) return;
+    const kFast = 2 / (fast + 1);
+    const kSlow = 2 / (slow + 1);
+    if (emaFast == null) {
+      const startF = Math.max(0, n - fast);
+      emaFast = sma(closes.slice(startF, startF + fast));
     } else {
-      ema9 = closes[n - 1] * k9 + ema9 * (1 - k9);
+      emaFast = closes[n - 1] * kFast + emaFast * (1 - kFast);
     }
-    if (ema21 == null) {
-      const start21 = Math.max(0, n - EMA_SLOW);
-      ema21 = sma(closes.slice(start21, start21 + EMA_SLOW));
+    if (emaSlow == null) {
+      const startS = Math.max(0, n - slow);
+      emaSlow = sma(closes.slice(startS, startS + slow));
     } else {
-      ema21 = closes[n - 1] * k21 + ema21 * (1 - k21);
+      emaSlow = closes[n - 1] * kSlow + emaSlow * (1 - kSlow);
+    }
+    if (filterSlow > 0) {
+      if (n < filterSlow) return;
+      const kFilter = 2 / (filterSlow + 1);
+      if (emaFilter == null) {
+        const startF = Math.max(0, n - filterSlow);
+        emaFilter = sma(closes.slice(startF, startF + filterSlow));
+      } else {
+        emaFilter = closes[n - 1] * kFilter + emaFilter * (1 - kFilter);
+      }
     }
   }
 
@@ -45,11 +61,12 @@ export function create(options = {}) {
   }
 
   function getSignal(candle) {
-    if (ema9 == null || ema21 == null) return StrategySignals.HOLD;
-    if (prevEma9 == null || prevEma21 == null) return StrategySignals.HOLD;
-    const crossUp = prevEma9 <= prevEma21 && ema9 > ema21;
-    const crossDown = prevEma9 >= prevEma21 && ema9 < ema21;
-    if (crossUp && state === StrategyState.FLAT) {
+    if (emaFast == null || emaSlow == null) return StrategySignals.HOLD;
+    if (prevEmaFast == null || prevEmaSlow == null) return StrategySignals.HOLD;
+    const crossUp = prevEmaFast <= prevEmaSlow && emaFast > emaSlow;
+    const crossDown = prevEmaFast >= prevEmaSlow && emaFast < emaSlow;
+    const ema20Above50 = filterSlow <= 0 || (emaFilter != null && emaSlow > emaFilter);
+    if (crossUp && state === StrategyState.FLAT && ema20Above50) {
       state = StrategyState.LONG;
       return StrategySignals.BUY;
     }
@@ -67,8 +84,8 @@ export function create(options = {}) {
     closes.push(close);
     if (closes.length > MAX_CLOSES) closes.splice(0, closes.length - MAX_CLOSES);
 
-    prevEma9 = ema9;
-    prevEma21 = ema21;
+    prevEmaFast = emaFast;
+    prevEmaSlow = emaSlow;
     computeEMAs();
 
     const signal = getSignal(candle);
@@ -80,8 +97,9 @@ export function create(options = {}) {
       signal,
       state,
       candle: { ...candle },
-      ema9: ema9 ?? undefined,
-      ema21: ema21 ?? undefined,
+      emaFast: emaFast ?? undefined,
+      emaSlow: emaSlow ?? undefined,
+      emaFilter: emaFilter ?? undefined,
     };
   }
 
@@ -91,3 +109,6 @@ export function create(options = {}) {
 
   return { name, onCandle, getState };
 }
+
+/** Strategy options for 1D backtest: EMA 10/20 cross, BUY only when EMA 20 > EMA 50 */
+export const options1D = { fast: 10, slow: 20, filterSlow: 50 };

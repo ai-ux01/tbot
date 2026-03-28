@@ -23,10 +23,12 @@ const DEFAULT_RISK = {
  * @param {Array<{ time: number, open: number, high: number, low: number, close: number }>} options.candles - sorted by time ascending
  * @param {Object} [options.risk] - RiskManager options
  * @param {Object} [options.strategyOptions] - Strategy-specific options
- * @returns {Promise<{ strategyName, symbol, timeframe, totalTrades, wins, losses, winRate, totalPnL, maxDrawdown, equityCurve, sharpeRatio }>}
+ * @param {boolean} [options.includeTrades=true] - Include trades array with entry/exit details
+ * @param {boolean} [options.exitOnCandleClose=false] - If true, SL/target only checked at candle close (no intrabar)
+ * @returns {Promise<{ strategyName, symbol, timeframe, totalTrades, wins, losses, winRate, totalPnL, maxDrawdown, equityCurve, sharpeRatio, trades? }>}
  */
 export function runBacktest(options = {}) {
-  const { strategyName, symbol, timeframe, candles: rawCandles, risk: riskOptions = {}, strategyOptions = {} } = options;
+  const { strategyName, symbol, timeframe, candles: rawCandles, risk: riskOptions = {}, strategyOptions = {}, includeTrades = true, exitOnCandleClose = false } = options;
   if (!strategyName || !symbol || !timeframe) {
     throw new Error('BacktestingEngine: strategyName, symbol, timeframe required');
   }
@@ -44,6 +46,7 @@ export function runBacktest(options = {}) {
       maxDrawdown: 0,
       equityCurve: [],
       sharpeRatio: null,
+      trades: [],
     });
   }
 
@@ -58,16 +61,45 @@ export function runBacktest(options = {}) {
   let peakEquity = capital;
   let maxDrawdown = 0;
   const equityCurve = [];
-  /** @type {{ quantity: number, entryPrice: number, stopLoss: number, target: number } | null} */
+  /** @type {{ quantity: number, entryPrice: number, stopLoss: number, target: number, entryTime: number } | null} */
   let positionRef = null;
   let totalTrades = 0;
   let wins = 0;
   let losses = 0;
   let totalPnL = 0;
   const tradePnLs = [];
+  const trades = [];
 
-  function closePosition(exitPrice, pnl) {
+  function toMs(t) {
+    if (t == null) return null;
+    if (t instanceof Date) return t.getTime();
+    if (typeof t === 'number') return t < 1e10 ? t * 1000 : t;
+    if (typeof t === 'string') return new Date(t).getTime();
+    return null;
+  }
+
+  function closePosition(exitPrice, pnl, exitTime, exitReason) {
     if (!positionRef) return;
+    if (includeTrades) {
+      const entryTime = positionRef.entryTime;
+      const exitT = exitTime ?? entryTime;
+      const entryMs = toMs(entryTime);
+      const exitMs = toMs(exitT);
+      const holdingTimeDays = entryMs != null && exitMs != null && exitMs >= entryMs ? (exitMs - entryMs) / (24 * 60 * 60 * 1000) : null;
+      const entryValue = positionRef.entryPrice * positionRef.quantity;
+      const profitPercent = entryValue !== 0 && Number.isFinite(pnl) ? (pnl / entryValue) * 100 : null;
+      trades.push({
+        entryTime: positionRef.entryTime,
+        entryPrice: positionRef.entryPrice,
+        exitTime: exitT,
+        exitPrice: exitPrice,
+        quantity: positionRef.quantity,
+        pnl,
+        exitReason: exitReason || 'SIGNAL',
+        holdingTimeDays: holdingTimeDays != null ? Math.round(holdingTimeDays * 100) / 100 : null,
+        profitPercent: profitPercent != null ? Math.round(profitPercent * 100) / 100 : null,
+      });
+    }
     totalTrades += 1;
     totalPnL += pnl;
     tradePnLs.push(pnl);
@@ -87,23 +119,24 @@ export function runBacktest(options = {}) {
     const h = candle?.high;
     const l = candle?.low;
     const c = candle?.close;
+    const candleTime = candle?.time ?? i;
     if (o == null || h == null || l == null || c == null || !Number.isFinite(c)) continue;
 
-    equityCurve.push({ time: candle.time ?? i, equity });
+    equityCurve.push({ time: candleTime, equity });
 
     if (positionRef) {
       const pos = positionRef;
-      const hitSl = l <= pos.stopLoss;
-      const hitTarget = h >= pos.target;
+      const hitSl = exitOnCandleClose ? c <= pos.stopLoss : l <= pos.stopLoss;
+      const hitTarget = exitOnCandleClose ? c >= pos.target : h >= pos.target;
       if (hitSl && hitTarget) {
         const pnl = (pos.stopLoss - pos.entryPrice) * pos.quantity;
-        closePosition(pos.stopLoss, pnl);
+        closePosition(exitOnCandleClose ? c : pos.stopLoss, pnl, candleTime, 'SL');
       } else if (hitSl) {
         const pnl = (pos.stopLoss - pos.entryPrice) * pos.quantity;
-        closePosition(pos.stopLoss, pnl);
+        closePosition(exitOnCandleClose ? c : pos.stopLoss, pnl, candleTime, 'SL');
       } else if (hitTarget) {
         const pnl = (pos.target - pos.entryPrice) * pos.quantity;
-        closePosition(pos.target, pnl);
+        closePosition(exitOnCandleClose ? c : pos.target, pnl, candleTime, 'TARGET');
       }
     }
 
@@ -120,13 +153,14 @@ export function runBacktest(options = {}) {
             entryPrice: price,
             stopLoss: res.stopLoss,
             target: res.target,
+            entryTime: candleTime,
           };
         }
       } else if (result.signal === 'SELL' && positionRef) {
         const res = riskManager.approveTrade('SELL', price, strategyName);
         if (res.approved && res.quantity != null) {
           const pnl = res.realizedPnl ?? (price - positionRef.entryPrice) * positionRef.quantity;
-          closePosition(price, pnl);
+          closePosition(price, pnl, candleTime, 'SIGNAL');
         }
       }
     }
@@ -143,7 +177,7 @@ export function runBacktest(options = {}) {
     }
   }
 
-  return Promise.resolve({
+  const out = {
     strategyName,
     symbol,
     timeframe,
@@ -155,5 +189,7 @@ export function runBacktest(options = {}) {
     maxDrawdown,
     equityCurve,
     sharpeRatio,
-  });
+  };
+  if (includeTrades) out.trades = trades;
+  return Promise.resolve(out);
 }

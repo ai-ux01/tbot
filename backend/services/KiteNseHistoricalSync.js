@@ -10,7 +10,7 @@ import { Candle } from '../database/models/Candle.js';
 import { isDbConnected } from '../database/connection.js';
 import { logger } from '../logger.js';
 
-const DELAY_MS = 2000;
+const DELAY_MS = 500;
 const YEARS_BACK = 5;
 const CHUNK_DAYS_60M = 60;
 

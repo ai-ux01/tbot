@@ -6,7 +6,13 @@
 import { computeIndicators } from '../IndicatorService.js';
 
 export { RSI_SETUP_CONFIG } from './config.js';
-export { evaluate } from './SwingStrategyEngine.js';
+export {
+  evaluate,
+  evaluateAllSetups,
+  formatRsiMomentumResetExplanation,
+  normalizeRsiSetupMode,
+  RSI_SETUP_MODES,
+} from './SwingStrategyEngine.js';
 export { RSIMomentumResetStrategy } from './RSIMomentumResetStrategy.js';
 
 /**

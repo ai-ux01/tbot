@@ -14,6 +14,7 @@ function getSocketUrl() {
 
 export function BotLiveProvider({ children }) {
   const [connected, setConnected] = useState(false);
+  const [socket, setSocket] = useState(null);
   const [livePrice, setLivePrice] = useState(null);
   const [lastCandle, setLastCandle] = useState(null);
   const [position, setPosition] = useState(null);
@@ -25,42 +26,44 @@ export function BotLiveProvider({ children }) {
 
   useEffect(() => {
     const url = getSocketUrl();
-    const socket = createSocketIOConnection(url, { autoConnect: true });
-    socketRef.current = socket;
+    const s = createSocketIOConnection(url, { autoConnect: false });
+    socketRef.current = s;
+    setSocket(s);
 
-    socket.on('connect', () => setConnected(true));
-    socket.on('disconnect', () => setConnected(false));
+    s.on('connect', () => setConnected(true));
+    s.on('disconnect', () => setConnected(false));
 
-    socket.on('tick', (data) => {
+    s.on('tick', (data) => {
       setLastTickTime(Date.now());
       if (data?.ltp != null) setLivePrice(Number(data.ltp));
     });
 
-    socket.on('candle', (data) => {
+    s.on('candle', (data) => {
       if (data && typeof data === 'object') setLastCandle(data);
     });
 
-    socket.on('signal', (data) => {
+    s.on('signal', (data) => {
       setLastSignal(data ?? null);
     });
 
-    socket.on('positionUpdate', (data) => {
+    s.on('positionUpdate', (data) => {
       const pos = data?.position ?? null;
       setPosition(pos ? { ...pos } : null);
     });
 
-    socket.on('botStatus', (data) => {
+    s.on('botStatus', (data) => {
       setBotStatus(data?.status ?? 'STOPPED');
     });
 
-    socket.on('circuitBreaker', (data) => {
+    s.on('circuitBreaker', (data) => {
       setCircuitBreaker(data ?? null);
     });
 
     return () => {
-      socket.removeAllListeners();
-      socket.disconnect();
+      s.removeAllListeners();
+      s.disconnect();
       socketRef.current = null;
+      setSocket(null);
     };
   }, []);
 
@@ -75,6 +78,7 @@ export function BotLiveProvider({ children }) {
 
   const value = {
     connected,
+    socket,
     livePrice,
     lastCandle,
     displayPrice,

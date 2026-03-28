@@ -3,6 +3,8 @@
  * Call setIO(io) from server after attaching io to the HTTP server.
  */
 
+import { subscribe as kiteWsSubscribe, getKiteSessionIdFromCookie } from './services/KiteWebSocketService.js';
+
 let _io = null;
 /** @type {() => ({ tick?: object, candle?: object, signal?: object, positionUpdate?: object, botStatus?: object }) | null} */
 let _getSnapshot = null;
@@ -20,6 +22,20 @@ export function setIO(io) {
         if (snapshot.botStatus != null) socket.emit('botStatus', snapshot.botStatus);
         if (snapshot.circuitBreaker != null) socket.emit('circuitBreaker', snapshot.circuitBreaker);
       }
+
+      socket.on('kiteWsSubscribe', (payload, cb) => {
+        const tokens = Array.isArray(payload) ? payload : (payload?.tokens ?? []);
+        const sessionId = getKiteSessionIdFromCookie(socket.handshake?.headers?.cookie ?? '');
+        if (!sessionId) {
+          (typeof cb === 'function') && cb({ success: false, error: 'Kite session not found. Log in with Kite first.' });
+          return;
+        }
+        socket.join('kite-' + sessionId);
+        const result = kiteWsSubscribe(sessionId, tokens, (ticks) => {
+          if (_io) _io.to('kite-' + sessionId).emit('kiteTick', ticks);
+        });
+        (typeof cb === 'function') && cb(result);
+      });
     });
   }
 }

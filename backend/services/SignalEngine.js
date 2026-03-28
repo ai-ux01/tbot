@@ -32,6 +32,7 @@ export async function getSymbolsWithStoredCandles() {
 
 /**
  * Fetch last N candles from DB for symbol or tradingsymbol + timeframe (oldest first).
+ * Uses most recent N candles so RSI/indicators reflect current bar, not oldest N.
  */
 export async function getCandlesForSignal(symbol, timeframe, limit = CANDLE_LIMIT) {
   const sym = String(symbol).trim();
@@ -40,10 +41,11 @@ export async function getCandlesForSignal(symbol, timeframe, limit = CANDLE_LIMI
   if (isToken) filter.symbol = sym;
   else filter.$or = [{ symbol: sym }, { tradingsymbol: { $regex: new RegExp(`^${sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }];
   const docs = await Candle.find(filter)
-    .sort({ time: 1 })
+    .sort({ time: -1 })
     .limit(limit)
     .lean();
-  return docs.map((d) => ({
+  const ordered = docs.reverse();
+  return ordered.map((d) => ({
     open: d.open,
     high: d.high,
     low: d.low,

@@ -161,19 +161,20 @@ export function SignalsPanel() {
               <tr>
                 <th>Instrument</th>
                 <th>Entry</th>
+                <th>Current price</th>
                 <th>Explain</th>
               </tr>
             </thead>
             <tbody>
               {rsiLoading && rsiSignals.length === 0 ? (
                 <tr>
-                  <td colSpan={3} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
+                  <td colSpan={4} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
                     Loading RSI Setup…
                   </td>
                 </tr>
               ) : rsiSignals.length === 0 ? (
                 <tr>
-                  <td colSpan={3} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
+                  <td colSpan={4} style={{ padding: 16, color: 'var(--text-muted)', textAlign: 'center' }}>
                     No RSI Setup BUY signals. Sync candles from NSE Historical Sync, then check RSI Setup tab.
                   </td>
                 </tr>
@@ -182,6 +183,11 @@ export function SignalsPanel() {
                   <tr key={s.tradingsymbol || s.instrument || ''}>
                     <td>{s.tradingsymbol || s.instrument || '—'}</td>
                     <td>{s.entryPrice != null ? Number(s.entryPrice).toFixed(2) : '—'}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {s.currentPrice != null && Number.isFinite(Number(s.currentPrice))
+                        ? Number(s.currentPrice).toFixed(2)
+                        : '—'}
+                    </td>
                     <td style={{ maxWidth: 400 }}>
                       <span className="muted" style={{ fontSize: '0.85rem' }}>
                         {s.explanation || 'No explanation.'}
@@ -194,7 +200,7 @@ export function SignalsPanel() {
           </table>
         </div>
         <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8, marginBottom: 0 }}>
-          RSI Setup BUY: peak ≥70 → Low1 → rebound → second pullback (close ≈ low1, RSI 35–60, RSI up, RSI touches SMA). Whole DB checked. Auto-refresh every 60s.
+          RSI Setup BUY: peak → low1 → rebound → entry below RSI SMA with RSI SMA rising; exit when RSI touches 70. Auto-refresh every 60s.
         </p>
       </div>
     </div>

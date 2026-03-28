@@ -11,6 +11,7 @@ import kiteRoutes from './routes/kite.js';
 import tradesRoutes from './routes/trades.js';
 import backtestRoutes from './routes/backtest.js';
 import signalsRoutes from './routes/signals.js';
+import paperTradingRoutes from './routes/paperTrading.js';
 import { logger } from './logger.js';
 import { setIO } from './socket.js';
 import { connectDb, disconnectDb } from './database/connection.js';
@@ -48,6 +49,7 @@ app.options('/api/kite/sync-nse-historical', (_, res) => res.set('Allow', 'POST'
 app.options('/api/kite/stored-candles', (_, res) => res.set('Allow', 'GET').sendStatus(204));
 app.options('/api/kite/stored-candles/summary', (_, res) => res.set('Allow', 'GET').sendStatus(204));
 app.options('/api/kite/stored-candles/symbols', (_, res) => res.set('Allow', 'GET').sendStatus(204));
+app.options('/api/kite/stored-candles/push', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 app.options('/api/kite/stored-candles/keep-only', (_, res) => res.set('Allow', 'DELETE').sendStatus(204));
 app.options('/api/kite/stored-candles/delete-by-tradingsymbols', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 app.options('/api/signals', (_, res) => res.set('Allow', 'GET, POST').sendStatus(204));
@@ -66,6 +68,7 @@ app.use('/api/kite', kiteRoutes);
 app.use('/api/trades', tradesRoutes);
 app.use('/api/backtest', backtestRoutes);
 app.use('/api/signals', signalsRoutes);
+app.use('/api/paper-trading', paperTradingRoutes);
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 

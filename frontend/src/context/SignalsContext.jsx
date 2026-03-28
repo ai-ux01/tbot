@@ -5,7 +5,7 @@ const POLL_INTERVAL_MS = 30000;
 
 const SignalsContext = createContext(null);
 
-export function SignalsProvider({ children, activeTab }) {
+export function SignalsProvider({ children, activePathname }) {
   const [signals, setSignals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -31,11 +31,11 @@ export function SignalsProvider({ children, activeTab }) {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'signals') return;
+    if (activePathname !== '/signals') return;
     fetchSignals();
     const id = setInterval(fetchSignals, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [activeTab, fetchSignals]);
+  }, [activePathname, fetchSignals]);
 
   const handleEvaluate = useCallback(async () => {
     const inst = (evalForm.instrument || '').trim();

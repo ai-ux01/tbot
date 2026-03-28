@@ -11,6 +11,7 @@ import { io } from 'socket.io-client';
 export function createSocketIOConnection(url, options = {}) {
   return io(url, {
     autoConnect: true,
+    withCredentials: true,
     ...options,
   });
 }

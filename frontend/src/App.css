@@ -103,6 +103,8 @@ body {
   text-align: left;
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
+  text-decoration: none;
+  box-sizing: border-box;
 }
 
 .dashboard-sidebar .nav-item:hover {
@@ -191,6 +193,47 @@ body {
   max-width: 1000px;
 }
 
+/* Fullscreen panel (RSI↓MA tabs): expand card to viewport */
+.dashboard-panel-expand-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-md);
+}
+
+.dashboard-panel-expand-row .dashboard-card-title {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.dashboard-panel-expand-btn {
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.panel-is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  background: var(--bg-app);
+  padding: var(--space-md);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.panel-is-fullscreen > .dashboard-card {
+  max-width: none;
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.panel-is-fullscreen .dashboard-table-wrap {
+  max-height: none !important;
+}
+
 /* Cards */
 .dashboard-card {
   background: var(--bg-card);
@@ -219,6 +262,33 @@ body {
   font-size: 0.8125rem;
   line-height: 1.45;
   color: var(--text-muted);
+}
+
+/* RSI↓MA (copy): backtest exit params — always under tabs so filters are not missed */
+.rsi-ma-copy-exit-filters {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-md) var(--space-md);
+  margin-bottom: var(--space-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.rsi-ma-copy-exit-filters-heading {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+.rsi-ma-copy-exit-filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm) var(--space-md);
 }
 
 .dashboard-card-header-with-filters {
@@ -1261,4 +1331,208 @@ select.bot-live-input {
 
 .trade-journal-pnl.negative {
   color: #f4212e;
+}
+
+/* Backtest combined: native <details> dropdown for trade details */
+.backtest-details-dropdown summary {
+  list-style: none;
+}
+
+.backtest-details-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.backtest-details-fullrow .backtest-details-summary-row {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(5rem, 1.2fr) minmax(4.5rem, 0.55fr) 0.55fr 0.75fr minmax(5rem, 1fr);
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 500;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-subtle, #2a3036);
+}
+
+.backtest-details-fullrow .backtest-row-chevron {
+  font-size: 0.65rem;
+  opacity: 0.9;
+  line-height: 1;
+}
+
+.backtest-details-fullrow[open] .backtest-row-chevron {
+  transform: rotate(90deg);
+}
+
+.backtest-combined-header-grid {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(5rem, 1.2fr) minmax(4.5rem, 0.55fr) 0.55fr 0.75fr minmax(5rem, 1fr);
+  gap: 0.5rem 0.75rem;
+  width: 100%;
+  padding: 0 12px 8px 12px;
+  font-size: 0.8rem;
+  color: var(--text-muted, #8b95a0);
+  font-weight: 600;
+}
+
+.backtest-header-spacer {
+  display: block;
+}
+
+/* Center the current price column in combined backtest grid */
+.backtest-col-current-price {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.backtest-combined-row td {
+  border-bottom: 1px solid var(--border-subtle, #2a3036);
+}
+
+.backtest-details-body {
+  padding: 12px 12px 14px;
+  border-top: 1px solid var(--border-subtle, #2a3036);
+  background: var(--bg-card, #161a1f);
+}
+
+/* Single-symbol backtest: summary-only row */
+.backtest-details-dropdown:not(.backtest-details-fullrow) summary::before {
+  content: '▶ ';
+  display: inline-block;
+  font-size: 0.65em;
+  margin-right: 4px;
+  transform: translateY(-1px);
+}
+
+.backtest-details-dropdown:not(.backtest-details-fullrow)[open] summary::before {
+  content: '▼ ';
+}
+
+/* RSI Setup: backtest controls (max hold + run) — separated so filters stay visible */
+.rsi-setup-backtest-controls {
+  border: 1px solid var(--border-subtle, #2a3036);
+  border-radius: var(--radius-sm, 8px);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
+}
+
+.rsi-setup-backtest-controls-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b95a0);
+  margin: 0 0 10px 0;
+}
+
+.rsi-setup-backtest-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+
+.rsi-setup-maxhold-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 8rem;
+}
+
+.rsi-setup-maxhold-field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary, #e7ecf1);
+}
+
+.rsi-setup-maxhold-field .rsi-setup-maxhold-hint {
+  font-size: 0.72rem;
+  line-height: 1.3;
+  max-width: 14rem;
+}
+
+.rsi-setup-backtest-filter-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border-subtle, #2a3036);
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
+}
+
+/* RSI Setup signals table: full explanation visible (wrap + scroll) */
+.rsi-setup-table-wrap {
+  overflow-x: auto;
+}
+
+.rsi-setup-signals-table {
+  min-width: 960px;
+  table-layout: auto;
+}
+
+.rsi-setup-col-symbol {
+  min-width: 7rem;
+}
+
+.rsi-setup-col-rsi {
+  min-width: 3rem;
+  white-space: nowrap;
+}
+
+.rsi-setup-col-price {
+  min-width: 4.5rem;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.rsi-setup-col-signal {
+  min-width: 8rem;
+}
+
+.rsi-setup-col-synced {
+  min-width: 5.5rem;
+  white-space: nowrap;
+}
+
+.rsi-setup-col-explain {
+  min-width: 22rem;
+  width: 38%;
+}
+
+.rsi-setup-explain-cell {
+  vertical-align: top;
+  min-width: 22rem;
+  max-width: 36rem;
+}
+
+.rsi-setup-explain-text {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: normal;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  hyphens: auto;
+}
+
+/* RSI backtest trade details: full-width setup line under each trade */
+.rsi-setup-trade-details-table {
+  min-width: 640px;
+}
+
+.rsi-setup-trade-explain-row td {
+  border-top: none !important;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.rsi-setup-trade-explain-inner {
+  max-width: 100%;
 }

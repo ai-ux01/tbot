@@ -102,6 +102,54 @@ function candlesToChartData(candles) {
     });
 }
 
+/**
+ * Sequence marker rule (RSI↓MA-style):
+ * 1) RSI dips below `preconditionLevel` (default 40),
+ * 2) then RSI rises above `armLevel` (default 55),
+ * 3) then RSI crosses down through RSI MA (prev RSI > prev MA and current RSI <= current MA).
+ */
+function computeRsiReturnBuyMarkers(ohlcData, rsiData, rsiMaData, armLevel = 55, preconditionLevel = 40, opts = {}) {
+  const { labelBase = '80% BUY RSI↓MA', color = '#2ecc71' } = opts;
+  if (!Array.isArray(rsiData) || rsiData.length < 2 || !Array.isArray(rsiMaData) || rsiMaData.length < 2) return [];
+  const maByTime = new Map(rsiMaData.map((p) => [Number(p.time), Number(p.value)]));
+  const closeByTime = new Map((ohlcData || []).map((b) => [Number(b.time), Number(b.close)]));
+  const markers = [];
+  let seenBelowPrecondition = false;
+  let firstDipClose = null;
+  let armed = false;
+  for (let i = 1; i < rsiData.length; i++) {
+    const prev = rsiData[i - 1];
+    const cur = rsiData[i];
+    const rPrev = Number(prev?.value);
+    const rNow = Number(cur?.value);
+    const mPrev = maByTime.get(Number(prev?.time));
+    const mNow = maByTime.get(Number(cur?.time));
+    if (!Number.isFinite(rPrev) || !Number.isFinite(rNow) || !Number.isFinite(mPrev) || !Number.isFinite(mNow)) continue;
+    const dippedBelowPrecondition = rPrev >= preconditionLevel && rNow < preconditionLevel;
+    if (dippedBelowPrecondition) {
+      seenBelowPrecondition = true;
+      const dipClose = closeByTime.get(Number(cur?.time));
+      firstDipClose = Number.isFinite(dipClose) ? Number(dipClose) : null;
+      armed = false;
+    }
+    if (seenBelowPrecondition && rNow > armLevel) armed = true;
+    if (armed && rPrev > mPrev && rNow <= mNow) {
+      const dipText = Number.isFinite(firstDipClose) ? ` dip<40 ${Number(firstDipClose).toFixed(2)}` : '';
+      markers.push({
+        time: cur.time,
+        position: 'belowBar',
+        shape: 'arrowUp',
+        color,
+        text: `${labelBase}${dipText}`,
+      });
+      firstDipClose = null;
+      seenBelowPrecondition = false;
+      armed = false;
+    }
+  }
+  return markers;
+}
+
 /** Build volume histogram data (time, value, color) from candles. */
 function candlesToVolumeData(candles) {
   if (!Array.isArray(candles) || candles.length === 0) return [];
@@ -124,14 +172,38 @@ function candlesToVolumeData(candles) {
     });
 }
 
-/** Compute SMA of period over OHLC data (by time). Returns { time, value }[]. */
-function computeSMA(ohlcData, period) {
-  if (!Array.isArray(ohlcData) || ohlcData.length < period) return [];
+/** Compute SMA of period over `close` or `value` series (by time). Returns { time, value }[]. */
+function computeSMA(seriesData, period) {
+  if (!Array.isArray(seriesData) || seriesData.length < period) return [];
   const out = [];
-  for (let i = period - 1; i < ohlcData.length; i++) {
+  for (let i = period - 1; i < seriesData.length; i++) {
     let sum = 0;
-    for (let j = 0; j < period; j++) sum += ohlcData[i - j].close;
-    out.push({ time: ohlcData[i].time, value: sum / period });
+    let valid = true;
+    for (let j = 0; j < period; j++) {
+      const point = seriesData[i - j];
+      const v = Number(point?.close ?? point?.value);
+      if (!Number.isFinite(v)) {
+        valid = false;
+        break;
+      }
+      sum += v;
+    }
+    if (valid) out.push({ time: seriesData[i].time, value: sum / period });
+  }
+  return out;
+}
+
+/** Compute EMA of period over close prices. Returns { time, value }[] from first complete bar. */
+function computeEMAFromCloses(ohlcData, period) {
+  if (!Array.isArray(ohlcData) || ohlcData.length < period) return [];
+  const k = 2 / (period + 1);
+  let ema = 0;
+  for (let j = 0; j < period; j++) ema += ohlcData[j].close;
+  ema /= period;
+  const out = [{ time: ohlcData[period - 1].time, value: ema }];
+  for (let i = period; i < ohlcData.length; i++) {
+    ema = ohlcData[i].close * k + ema * (1 - k);
+    out.push({ time: ohlcData[i].time, value: ema });
   }
   return out;
 }
@@ -215,6 +287,54 @@ function findPivotHighs(osc, left, right) {
     if (isMax) out.push(i);
   }
   return out;
+}
+
+/**
+ * Price structure markers on candle chart:
+ * - HH when a new pivot high is above the previous pivot high
+ * - LL when a new pivot low is below the previous pivot low
+ */
+function computeHhLlMarkers(ohlcData, left = 3, right = 3) {
+  if (!Array.isArray(ohlcData) || ohlcData.length < left + right + 2) return [];
+  const highs = ohlcData.map((b) => b.high);
+  const lows = ohlcData.map((b) => b.low);
+  const highPivots = findPivotHighs(highs, left, right);
+  const lowPivots = findPivotLows(lows, left, right);
+
+  const markers = [];
+  let prevHigh = null;
+  for (const idx of highPivots) {
+    const h = highs[idx];
+    if (h == null) continue;
+    if (prevHigh != null && h > prevHigh) {
+      markers.push({
+        time: ohlcData[idx].time,
+        position: 'aboveBar',
+        shape: 'arrowDown',
+        color: '#42a5f5',
+        text: 'HH',
+      });
+    }
+    prevHigh = h;
+  }
+
+  let prevLow = null;
+  for (const idx of lowPivots) {
+    const l = lows[idx];
+    if (l == null) continue;
+    if (prevLow != null && l < prevLow) {
+      markers.push({
+        time: ohlcData[idx].time,
+        position: 'belowBar',
+        shape: 'arrowUp',
+        color: '#ab47bc',
+        text: 'LL',
+      });
+    }
+    prevLow = l;
+  }
+
+  return markers.sort((a, b) => Number(a.time) - Number(b.time));
 }
 
 /**
@@ -309,16 +429,35 @@ export function StoredDataPanel() {
   const volumeSeriesRef = useRef(null);
   const sma20Ref = useRef(null);
   const sma50Ref = useRef(null);
+  const ema10Ref = useRef(null);
+  const ema20Ref = useRef(null);
+  const ema50Ref = useRef(null);
+  const ema100Ref = useRef(null);
+  const ema200Ref = useRef(null);
   const rsiRef = useRef(null);
   const rsiSmoothedRef = useRef(null);
   const rsiMarkersRef = useRef(null);
+  const eightyPercentMarkersRef = useRef(null);
   const [chartOptions, setChartOptions] = useState({
     showVolume: true,
     showSma20: false,
     showSma50: false,
+    showEma: true,
     showRsi: false,
+    showEightyPercentSetup: true,
+    showRsiMaSetupCopy: false,
+    showHhLl: true,
     crosshairMagnet: true,
   });
+  const [emaFilter, setEmaFilter] = useState({ 10: true, 20: true, 50: true, 100: true, 200: true });
+  const EMA_PERIODS = [10, 20, 50, 100, 200];
+  const EMA_COLORS = ['#00bcd4', '#2196f3', '#ff9800', '#9c27b0', '#78909c'];
+  const toggleEmaPeriod = (period) => {
+    setEmaFilter((prev) => ({ ...prev, [period]: !prev[period] }));
+  };
+  const setAllEma = (on) => {
+    setEmaFilter({ 10: on, 20: on, 50: on, 100: on, 200: on });
+  };
   const [isChartFullscreen, setIsChartFullscreen] = useState(false);
   const chartWrapRef = useRef(null);
   /** RSI pane height as fraction of chart (0.1–0.5). User can drag to resize. */
@@ -387,16 +526,23 @@ export function StoredDataPanel() {
         volumeSeriesRef.current = null;
         sma20Ref.current = null;
         sma50Ref.current = null;
+        ema10Ref.current = null;
+        ema20Ref.current = null;
+        ema50Ref.current = null;
+        ema100Ref.current = null;
+        ema200Ref.current = null;
         rsiRef.current = null;
         rsiSmoothedRef.current = null;
         rsiMarkersRef.current = null;
+        eightyPercentMarkersRef.current = null;
       }
       return;
     }
-    const { showVolume, showSma20, showSma50, showRsi, crosshairMagnet } = chartOptions;
+    const { showVolume, showSma20, showSma50, showEma, showRsi, showEightyPercentSetup, showRsiMaSetupCopy, showHhLl, crosshairMagnet } = chartOptions;
     const volumeData = candlesToVolumeData(displayedCandles);
     const sma20Data = computeSMA(ohlcData, 20);
     const sma50Data = computeSMA(ohlcData, 50);
+    const emaData = EMA_PERIODS.map((p) => computeEMAFromCloses(ohlcData, p));
     const rsiData = computeRSI(ohlcData, 14);
     const period = 14;
     const combined = rsiData.length > 0 ? rsiData.map((r, i) => ({
@@ -407,6 +553,19 @@ export function StoredDataPanel() {
     })) : [];
     const rsiDivergenceMarkers = combined.length > 0 ? computeRSIDivergence(combined) : [];
     const rsiSmoothedData = computeEMA(rsiData, 10);
+    const rsiMaData = computeSMA(rsiData, 14);
+    const eightyPercentChartMarkers = showEightyPercentSetup
+      ? computeRsiReturnBuyMarkers(ohlcData, rsiData, rsiMaData, 55, 40)
+      : [];
+    const rsiMaCopyChartMarkers = showRsiMaSetupCopy
+      ? computeRsiReturnBuyMarkers(ohlcData, rsiData, rsiMaData, 55, 40, {
+          labelBase: 'COPY RSI↓MA',
+          color: '#f39c12',
+        })
+      : [];
+    const hhLlChartMarkers = showHhLl ? computeHhLlMarkers(ohlcData, 3, 3) : [];
+    const mainMarkers = [...eightyPercentChartMarkers, ...rsiMaCopyChartMarkers, ...hhLlChartMarkers]
+      .sort((a, b) => Number(a.time) - Number(b.time));
 
     if (!chartRef.current) {
       const containerEl = chartContainerRef.current;
@@ -447,6 +606,7 @@ export function StoredDataPanel() {
       const bottomMargin = showVolume ? 0.4 : showRsi ? rsiPaneRatio : 0.1;
       mainSeries.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: bottomMargin } });
       mainSeries.setData(ohlcData);
+      eightyPercentMarkersRef.current = createSeriesMarkers(mainSeries, mainMarkers);
       candlestickRef.current = mainSeries;
       chartRef.current = chart;
 
@@ -468,6 +628,14 @@ export function StoredDataPanel() {
       sma50Series.setData(sma50Data);
       sma50Series.applyOptions({ visible: showSma50 });
       sma50Ref.current = sma50Series;
+
+      const emaRefs = [ema10Ref, ema20Ref, ema50Ref, ema100Ref, ema200Ref];
+      EMA_PERIODS.forEach((period, idx) => {
+        const series = chart.addSeries(LineSeries, { color: EMA_COLORS[idx], lineWidth: 2 });
+        series.setData(emaData[idx]);
+        series.applyOptions({ visible: showEma && emaFilter[period] });
+        emaRefs[idx].current = series;
+      });
 
       const rsiSeries = chart.addSeries(LineSeries, {
         color: '#2962FF',
@@ -518,9 +686,15 @@ export function StoredDataPanel() {
         volumeSeriesRef.current = null;
         sma20Ref.current = null;
         sma50Ref.current = null;
+        ema10Ref.current = null;
+        ema20Ref.current = null;
+        ema50Ref.current = null;
+        ema100Ref.current = null;
+        ema200Ref.current = null;
         rsiRef.current = null;
         rsiSmoothedRef.current = null;
         rsiMarkersRef.current = null;
+        eightyPercentMarkersRef.current = null;
       };
     }
 
@@ -539,6 +713,13 @@ export function StoredDataPanel() {
       sma50Ref.current.setData(sma50Data);
       sma50Ref.current.applyOptions({ visible: showSma50 });
     }
+    const emaRefs = [ema10Ref, ema20Ref, ema50Ref, ema100Ref, ema200Ref];
+    emaRefs.forEach((ref, idx) => {
+      if (ref.current) {
+        ref.current.setData(emaData[idx]);
+        ref.current.applyOptions({ visible: showEma && emaFilter[EMA_PERIODS[idx]] });
+      }
+    });
     if (rsiRef.current) {
       rsiRef.current.setData(rsiData);
       rsiRef.current.applyOptions({ visible: showRsi });
@@ -548,6 +729,9 @@ export function StoredDataPanel() {
     }
     if (rsiMarkersRef.current) {
       rsiMarkersRef.current.setMarkers(rsiDivergenceMarkers);
+    }
+    if (eightyPercentMarkersRef.current) {
+      eightyPercentMarkersRef.current.setMarkers(mainMarkers);
     }
     if (rsiSmoothedRef.current) {
       rsiSmoothedRef.current.setData(rsiSmoothedData);
@@ -560,7 +744,7 @@ export function StoredDataPanel() {
         horzLine: { color: 'rgba(117, 134, 150, 0.35)' },
       },
     });
-  }, [displayedCandles, chartOptions, rsiPaneRatio]);
+  }, [displayedCandles, chartOptions, rsiPaneRatio, emaFilter]);
 
   const handleChartFitContent = () => {
     if (chartRef.current) chartRef.current.timeScale().fitContent();
@@ -661,8 +845,14 @@ export function StoredDataPanel() {
     setChartTimeframeFilter(null);
     setQueryLoading(true);
     try {
-      const isToken = /^\d+$/.test(trimmed);
-      const baseParams = isToken ? { symbol: trimmed } : { tradingsymbol: trimmed };
+      // Resolve tradingsymbol to symbol (token) so chart uses same candle source as strategy panels
+      const list = summary?.symbols || [];
+      const resolved =
+        !/^\d+$/.test(trimmed) && list.length > 0
+          ? (list.find((s) => String(s.tradingsymbol || '').toLowerCase() === trimmed.toLowerCase())?.symbol ?? trimmed)
+          : trimmed;
+      const isToken = /^\d+$/.test(resolved);
+      const baseParams = isToken ? { symbol: resolved } : { tradingsymbol: resolved };
       const [dayRes, hourRes] = await Promise.all([
         getStoredCandles({ ...baseParams, timeframe: 'day', limit: 2000 }),
         getStoredCandles({ ...baseParams, timeframe: '60minute', limit: 5000 }),
@@ -855,10 +1045,18 @@ export function StoredDataPanel() {
               }}
             >
               <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0, color: '#e7e9ea', minWidth: 0, display: 'flex', alignItems: 'center' }}>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 600, margin: 0, color: '#e7e9ea', minWidth: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px' }}>
                   <span style={{ color: '#8b98a5', fontWeight: 500 }}>Stock: </span>
                   {stockDisplayName(displayedCandles[0] ?? candles[0])}
                   <span style={{ fontWeight: 400, color: '#8b98a5', fontSize: '0.9rem' }}> · {chartTimeframeFilter === '60minute' ? '1H' : chartTimeframeFilter === 'day' ? '1D' : (displayedCandles[0]?.timeframe ?? candles[0]?.timeframe ?? '')} · {displayedCandles.length} candles</span>
+                  {chartOptions.showEma && (
+                    <span style={{ fontSize: '0.75rem', color: '#8b98a5', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      EMA
+                      {EMA_PERIODS.map((p, i) => (
+                        emaFilter[p] ? <span key={p} style={{ color: EMA_COLORS[i] }}>{p}</span> : null
+                      ))}
+                    </span>
+                  )}
                 </h3>
                 {candles.some((c) => c.timeframe === '60minute') && candles.some((c) => c.timeframe === 'day') && (
                   <span style={{ display: 'inline-flex', gap: 4, alignItems: 'stretch' }}>
@@ -874,7 +1072,30 @@ export function StoredDataPanel() {
                   <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showVolume ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showVolume: !o.showVolume }))}>Volume</button>
                   <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showSma20 ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showSma20: !o.showSma20 }))}>SMA 20</button>
                   <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showSma50 ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showSma50: !o.showSma50 }))}>SMA 50</button>
+                  <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showEma ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showEma: !o.showEma }))} title="Show/hide EMA group">EMA</button>
+                  {EMA_PERIODS.map((p, i) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className="bot-live-button"
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.75rem',
+                        minHeight: 28,
+                        ...(chartOptions.showEma && emaFilter[p] ? { opacity: 1, color: EMA_COLORS[i], fontWeight: 600 } : { opacity: 0.6 }),
+                      }}
+                      onClick={() => toggleEmaPeriod(p)}
+                      title={`Toggle EMA ${p}`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                  <button type="button" className="bot-live-button" style={{ padding: '4px 6px', fontSize: '0.7rem', minHeight: 28, opacity: 0.8 }} onClick={() => setAllEma(true)} title="Show all EMAs">All</button>
+                  <button type="button" className="bot-live-button" style={{ padding: '4px 6px', fontSize: '0.7rem', minHeight: 28, opacity: 0.8 }} onClick={() => setAllEma(false)} title="Hide all EMAs">None</button>
                   <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showRsi ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showRsi: !o.showRsi }))}>RSI</button>
+                  <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showEightyPercentSetup ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showEightyPercentSetup: !o.showEightyPercentSetup }))}>RSI↓MA setup</button>
+                  <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showRsiMaSetupCopy ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showRsiMaSetupCopy: !o.showRsiMaSetupCopy }))} title="Uses rsiMaSetupCopy strategy (tune in backend)">RSI↓MA copy</button>
+                  <button type="button" className="bot-live-button" style={{ padding: '6px 10px', fontSize: '0.75rem', minHeight: 32, ...(chartOptions.showHhLl ? { opacity: 1 } : { opacity: 0.7 }) }} onClick={() => setChartOptions((o) => ({ ...o, showHhLl: !o.showHhLl }))}>HH/LL</button>
                 </span>
               </div>
               <div
