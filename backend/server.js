@@ -78,6 +78,16 @@ async function start() {
   if (process.env.MONGODB_URI) {
     try {
       await connectDb();
+      try {
+        const { loadPaperPortfolioStateIntoStore } = await import('./services/paperPortfolioPersistence.js');
+        const { paperTradingStore } = await import('./services/PaperTradingStore.js');
+        const loaded = await loadPaperPortfolioStateIntoStore(paperTradingStore);
+        if (loaded) {
+          logger.info('Paper portfolio', { msg: 'Restored open positions and cash from MongoDB' });
+        }
+      } catch (err) {
+        logger.warn('Paper portfolio restore skipped', { error: err?.message });
+      }
     } catch (err) {
       logger.error('Startup failed: database connection', { error: err?.message });
       process.exit(1);

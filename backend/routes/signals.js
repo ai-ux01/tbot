@@ -27,11 +27,13 @@ import {
   RSI_PRECONDITION_LEVEL as RSI_MA_COPY_RSI_PRECONDITION,
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
+  RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
   planRsiMaCopyTradeLevels,
 } from '../services/rsiMaSetupCopy.js';
 import { aggregateDailyToMonthly, normalizeBacktestSeries } from '../services/candleAggregate.js';
 import { aggregateTradesByExitMonth } from '../services/backtestMonthlyBreakdown.js';
 import { runBacktest } from '../bot/BacktestingEngine.js';
+import { persistBacktestRun, sanitizeBacktestRequest } from '../services/backtestRunPersistence.js';
 
 const RSI_MA_DAILY_FETCH_FOR_MONTHLY = 5000;
 const RSI_MA_MIN_MONTHLY_BARS = 30;
@@ -254,6 +256,10 @@ function parseRsiMaCopyExitQuery(query) {
     const v = Number(query.rsiRemainderExit);
     if (Number.isFinite(v)) out.rsiRemainderExit = v;
   }
+  if (query?.partialTpFraction != null && String(query.partialTpFraction).trim() !== '') {
+    const parsed = parseRsiMaCopyPartialTpFraction(query.partialTpFraction);
+    if ('value' in parsed && parsed.value != null) out.partialTpFraction = parsed.value;
+  }
   return out;
 }
 
@@ -284,7 +290,7 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe,
   if (setups.length > 0) {
     for (const s of setups) {
       const entryTime = candles[s.entryIndex]?.time ?? null;
-      const explanation = `RSI↓MA Setup (copy): RSI dipped below ${RSI_MA_COPY_RSI_PRECONDITION}, rose above ${RSI_MA_COPY_RSI_ARM}, then crossed down through RSI MA; entry is first dip-below-${RSI_MA_COPY_RSI_PRECONDITION} close ${Number(s.entryPrice).toFixed(2)}.`;
+      const explanation = `RSI↓MA Setup (copy): RSI dipped below ${RSI_MA_COPY_RSI_PRECONDITION}, rose above ${RSI_MA_COPY_RSI_ARM}, then crossed down through RSI MA; entry is lowest low while RSI below ${RSI_MA_COPY_RSI_PRECONDITION} ${Number(s.entryPrice).toFixed(2)}.`;
       const psl = s.previousSwingLow ?? s.entryPrice;
       rows.push(
         attachRsiMaCopyTradeLevels(
@@ -653,14 +659,21 @@ router.post('/eighty-percent/backtest', async (req, res) => {
     if (!loaded.ok) return res.status(loaded.status).json(loaded.body);
     const result = runEightyPercentBacktest(loaded.ohlcv, { maxHoldingDays });
     const monthlyBreakdown = aggregateTradesByExitMonth(result.trades, loaded.ohlcv);
-    res.json({
+    const payload = {
       symbol,
       barUnit: loaded.barUnit,
       dailyBarsUsed: loaded.dailyBarsUsed,
       monthlyBars: loaded.monthlyBars,
       monthlyBreakdown,
       ...result,
+    };
+    void persistBacktestRun({
+      route: 'POST /api/signals/eighty-percent/backtest',
+      method: 'POST',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
     });
+    res.json(payload);
   } catch (err) {
     logger.error('80% Setup backtest failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? '80% Setup backtest failed' });
@@ -711,7 +724,7 @@ router.get('/eighty-percent/backtest/combined', async (req, res) => {
     const totalTrades = results.reduce((s, r) => s + (r.tradesCount || 0), 0);
     const wins = results.reduce((s, r) => s + (r.tradesCount ? Math.round(r.winRate * r.tradesCount) : 0), 0);
     const totalPnlPercent = totalInvestedAmount > 0 ? totalPnl / totalInvestedAmount : 0;
-    res.json({
+    const payload = {
       summary: {
         totalTrades,
         winRate: totalTrades > 0 ? wins / totalTrades : 0,
@@ -727,7 +740,14 @@ router.get('/eighty-percent/backtest/combined', async (req, res) => {
       results,
       maxHoldingDays: maxHoldingDays ?? null,
       barUnit,
+    };
+    void persistBacktestRun({
+      route: 'GET /api/signals/eighty-percent/backtest/combined',
+      method: 'GET',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
     });
+    res.json(payload);
   } catch (err) {
     logger.error('80% Setup backtest combined failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? '80% Setup backtest combined failed' });
@@ -802,21 +822,31 @@ router.post('/rsi-ma-setup-copy/backtest', async (req, res) => {
     if ('error' in ptp) return res.status(400).json({ error: ptp.error });
     const rsiRem = parseRsiMaCopyRsiRemainderExit(req.body?.rsiRemainderExit ?? req.query?.rsiRemainderExit);
     if ('error' in rsiRem) return res.status(400).json({ error: rsiRem.error });
+    const pFrac = parseRsiMaCopyPartialTpFraction(req.body?.partialTpFraction ?? req.query?.partialTpFraction);
+    if ('error' in pFrac) return res.status(400).json({ error: pFrac.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
+    if (pFrac.value != null) copyBtOpts.partialTpFraction = pFrac.value;
     const loaded = await loadOhlcvRsiMaBacktest(symbol, series);
     if (!loaded.ok) return res.status(loaded.status).json(loaded.body);
     const result = runRsiMaSetupCopyBacktest(loaded.ohlcv, copyBtOpts);
     const monthlyBreakdown = aggregateTradesByExitMonth(result.trades, loaded.ohlcv);
-    res.json({
+    const payload = {
       symbol,
       barUnit: loaded.barUnit,
       dailyBarsUsed: loaded.dailyBarsUsed,
       monthlyBars: loaded.monthlyBars,
       monthlyBreakdown,
       ...result,
+    };
+    void persistBacktestRun({
+      route: 'POST /api/signals/rsi-ma-setup-copy/backtest',
+      method: 'POST',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
     });
+    res.json(payload);
   } catch (err) {
     logger.error('RSI↓MA Setup copy backtest failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'RSI↓MA Setup copy backtest failed' });
@@ -840,9 +870,12 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
     if ('error' in ptp) return res.status(400).json({ error: ptp.error });
     const rsiRem = parseRsiMaCopyRsiRemainderExit(req.query.rsiRemainderExit);
     if ('error' in rsiRem) return res.status(400).json({ error: rsiRem.error });
+    const pFrac = parseRsiMaCopyPartialTpFraction(req.query.partialTpFraction);
+    if ('error' in pFrac) return res.status(400).json({ error: pFrac.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
+    if (pFrac.value != null) copyBtOpts.partialTpFraction = pFrac.value;
     const barUnit = normalizeBacktestSeries(series) === 'month' ? 'month' : 'day';
     const symbols = await getSymbolsWithStoredCandles();
     const reqLimit = parseInt(req.query.limit, 10);
@@ -873,7 +906,7 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
     const totalTrades = results.reduce((s, r) => s + (r.tradesCount || 0), 0);
     const wins = results.reduce((s, r) => s + (r.tradesCount ? Math.round(r.winRate * r.tradesCount) : 0), 0);
     const totalPnlPercent = totalInvestedAmount > 0 ? totalPnl / totalInvestedAmount : 0;
-    res.json({
+    const payload = {
       summary: {
         totalTrades,
         winRate: totalTrades > 0 ? wins / totalTrades : 0,
@@ -891,7 +924,15 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
       barUnit,
       profitTargetPct: ptp.value ?? RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT,
       rsiRemainderExit: rsiRem.value ?? RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
+      partialTpFraction: pFrac.value ?? RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
+    };
+    void persistBacktestRun({
+      route: 'GET /api/signals/rsi-ma-setup-copy/backtest/combined',
+      method: 'GET',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
     });
+    res.json(payload);
   } catch (err) {
     logger.error('RSI↓MA Setup copy backtest combined failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'RSI↓MA Setup copy backtest combined failed' });
@@ -1047,7 +1088,14 @@ router.get('/ema-crossover/backtest', async (req, res) => {
       totalTrades: results.reduce((s, r) => s + (r.totalTrades ?? 0), 0),
       totalPnL: results.reduce((s, r) => s + (r.totalPnL ?? 0), 0),
     };
-    res.json({ summary, results });
+    const payload = { summary, results };
+    void persistBacktestRun({
+      route: 'GET /api/signals/ema-crossover/backtest',
+      method: 'GET',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
+    });
+    res.json(payload);
   } catch (err) {
     logger.error('EMA Crossover backtest failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'EMA Crossover backtest failed' });
@@ -1126,6 +1174,19 @@ function parseRsiMaCopyRsiRemainderExit(raw) {
     return { error: 'rsiRemainderExit must be an integer between 5 and 95' };
   }
   return { value: n };
+}
+
+/** Fraction of position at first TP: 0.8, 80, 1, or 100 for full exit at TP. */
+function parseRsiMaCopyPartialTpFraction(raw) {
+  if (raw === undefined || raw === null || raw === '') return { value: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    return { error: 'partialTpFraction must be positive (e.g. 0.8, 80 for 80%, or 1 / 100 for 100%)' };
+  }
+  const f = n > 1 ? n / 100 : n;
+  if (f > 1) return { error: 'partialTpFraction cannot exceed 100% (use 1 or 100)' };
+  if (f < 0.01) return { error: 'partialTpFraction must be at least 1% (0.01 or 1)' };
+  return { value: f };
 }
 
 /** @param {unknown} minRaw @param {unknown} maxRaw @returns {{ minPrice: null, maxPrice: null } | { error: string }} */
@@ -1259,7 +1320,14 @@ router.post('/rsi-setup/backtest', async (req, res) => {
     }
 
     const result = runRsiSetupBacktest(ohlcv, { maxHoldingDays, mode, thresholds });
-    res.json({ symbol, currentPrice, minPrice, maxPrice, mode, thresholds, ...result });
+    const payload = { symbol, currentPrice, minPrice, maxPrice, mode, thresholds, ...result };
+    void persistBacktestRun({
+      route: 'POST /api/signals/rsi-setup/backtest',
+      method: 'POST',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
+    });
+    res.json(payload);
   } catch (err) {
     logger.error('RSI Setup backtest failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'RSI Setup backtest failed' });
@@ -1344,7 +1412,14 @@ router.get('/rsi-setup/backtest/combined', async (req, res) => {
         : 0,
       priceFilteredOut,
     };
-    res.json({ summary, results, maxHoldingDays, minPrice, maxPrice, mode, thresholds });
+    const payload = { summary, results, maxHoldingDays, minPrice, maxPrice, mode, thresholds };
+    void persistBacktestRun({
+      route: 'GET /api/signals/rsi-setup/backtest/combined',
+      method: 'GET',
+      params: sanitizeBacktestRequest(req),
+      response: payload,
+    });
+    res.json(payload);
   } catch (err) {
     logger.error('RSI Setup backtest combined failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'RSI Setup backtest combined failed' });

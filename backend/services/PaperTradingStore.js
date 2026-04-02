@@ -1,6 +1,6 @@
 /**
  * In-memory paper portfolio (single shared instance for the server process).
- * One open long per (setupId, symbol). Not persisted across restarts.
+ * One open long per (setupId, symbol). Open state is persisted to MongoDB when connected (see paperPortfolioPersistence).
  */
 
 function newId() {
@@ -24,6 +24,51 @@ export class PaperTradingStore {
     this.positions = new Map();
     /** @type {object[]} */
     this.closedTrades = [];
+  }
+
+  /**
+   * Restore cash, initial capital, and open positions from Mongo (process restart).
+   * Does not load closedTrades (use GET /paper-trading/trades for history).
+   * @param {{ initialCapital?: number, cash?: number, positions?: object[] }} saved
+   */
+  hydrateFromPersistence(saved) {
+    if (!saved || typeof saved !== 'object') return;
+    const ic = Number(saved.initialCapital);
+    if (Number.isFinite(ic) && ic > 0) {
+      this.initialCapital = ic;
+    }
+    const cash = Number(saved.cash);
+    if (Number.isFinite(cash)) {
+      this.cash = cash;
+    }
+    this.positions.clear();
+    const arr = Array.isArray(saved.positions) ? saved.positions : [];
+    for (const p of arr) {
+      if (!p || p.setupId == null || p.symbol == null) continue;
+      const setupId = String(p.setupId).trim();
+      const symbol = String(p.symbol).trim();
+      if (!setupId || !symbol) continue;
+      const q = Math.floor(Number(p.qty));
+      const px = Number(p.entryPrice);
+      if (!Number.isFinite(q) || q < 1 || !Number.isFinite(px) || px <= 0) continue;
+      const key = this.positionKey(setupId, symbol);
+      const position = {
+        id: p.id != null ? String(p.id) : newId(),
+        setupId,
+        symbol,
+        tradingsymbol: p.tradingsymbol != null ? String(p.tradingsymbol) : symbol,
+        qty: q,
+        entryPrice: px,
+        openedAt: p.openedAt != null ? String(p.openedAt) : new Date().toISOString(),
+        snapshot: p.snapshot ?? null,
+        orderValueInr:
+          p.orderValueInr != null && Number.isFinite(Number(p.orderValueInr))
+            ? Number(p.orderValueInr)
+            : null,
+        paperRules: p.paperRules && typeof p.paperRules === 'object' ? { ...p.paperRules } : null,
+      };
+      this.positions.set(key, position);
+    }
   }
 
   positionKey(setupId, symbol) {

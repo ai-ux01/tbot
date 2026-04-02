@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/strategies.test.js test/riskManager.test.js test/backtest.test.js test/candleBuilder.test.js test/botEngine.test.js test/rsiSetupBacktest.test.js test/backtestMonthlyBreakdown.test.js test/rsiMaSetupCopyLevels.test.js test/rsiMaSetupCopyPaperBar.test.js test/paperTradingStore.test.js test/paperTradePersistence.test.js test/paperTradingFillPrice.test.js"
+    "test": "node --test test/strategies.test.js test/riskManager.test.js test/backtest.test.js test/candleBuilder.test.js test/botEngine.test.js test/rsiSetupBacktest.test.js test/backtestMonthlyBreakdown.test.js test/rsiMaSetupCopyLevels.test.js test/rsiMaSetupCopyPaperBar.test.js test/paperTradingStore.test.js test/paperTradePersistence.test.js test/paperTradingFillPrice.test.js test/backtestRunPersistence.test.js"
   },
   "engines": {
     "node": ">=18.0.0"

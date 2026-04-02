@@ -323,15 +323,16 @@ export function atrSeries(ohlcv, period = 14) {
  * Full indicator series for strategies (RSI setup etc). Returns arrays aligned by index.
  * @param {Array<{ open, high, low, close, volume? }>} ohlcv
  * @param {{ atrPeriod?: number } } [opts]
- * @returns {{ close: number[], rsi: number[], ema20: number[], ema50: number[], volume: number[], avgVolume: number[], atr: number[] }}
+ * @returns {{ close: number[], high: number[], low: number[], rsi: number[], rsiSma: number[], ema20: number[], ema50: number[], volume: number[], avgVolume: number[], atr: number[] }}
  */
 export function computeIndicatorSeries(ohlcv, opts = {}) {
   const atrPeriod = opts.atrPeriod ?? 14;
   if (!Array.isArray(ohlcv) || ohlcv.length === 0) {
-    return { close: [], high: [], rsi: [], rsiSma: [], ema20: [], ema50: [], volume: [], avgVolume: [], atr: [] };
+    return { close: [], high: [], low: [], rsi: [], rsiSma: [], ema20: [], ema50: [], volume: [], avgVolume: [], atr: [] };
   }
   const close = [];
   const high = [];
+  const low = [];
   const volume = [];
   const validOhlcv = [];
   ohlcv.forEach((c) => {
@@ -339,6 +340,7 @@ export function computeIndicatorSeries(ohlcv, opts = {}) {
     if (Number.isFinite(cl)) {
       close.push(cl);
       high.push(Number(c.high) ?? cl);
+      low.push(Number(c.low) ?? cl);
       volume.push(Number(c.volume) || 0);
       validOhlcv.push({
         open: Number(c.open) ?? cl,
@@ -358,6 +360,7 @@ export function computeIndicatorSeries(ohlcv, opts = {}) {
   return {
     close,
     high,
+    low,
     rsi: rsiArr,
     rsiSma: rsiSmaArr,
     ema20: ema20Arr,

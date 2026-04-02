@@ -58,7 +58,7 @@ router.get('/state', async (_req, res) => {
 });
 
 router.post('/reset', async (_req, res) => {
-  const state = resetPaperTrading();
+  const state = await resetPaperTrading();
   if (!isDbConnected()) return res.json(state);
   try {
     return res.json(await enrichPaperTradingState(state));
@@ -174,6 +174,7 @@ router.post('/tick', async (req, res) => {
       series: req.body?.series,
       profitTargetPct: req.body?.profitTargetPct,
       rsiRemainderExit: req.body?.rsiRemainderExit,
+      partialTpFraction: req.body?.partialTpFraction,
       maxHoldingDays: req.body?.maxHoldingDays,
     };
     const out = await applyPaperTick(paperTradingStore, setupId, symbol, orderValueInr, opts);

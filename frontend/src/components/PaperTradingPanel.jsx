@@ -362,12 +362,12 @@ export function PaperTradingPanel() {
             className="bot-live-button"
             onClick={runForceDaily}
             disabled={loading || forceDailyLoading}
-            title="Runs bar exits on every open position, then auto-entry ticks from server env PAPER_TRADING_AUTO (same as the daily cron)"
+            title="Runs bar exits on every open position, then auto-entry ticks from server env PAPER_TRADING_AUTO only (no request body). For RSI↓MA (copy) live BUYs, use Run daily paper job on that signals page — it POSTs rows."
           >
             {forceDailyLoading ? 'Running…' : 'Run daily job now'}
           </button>
           <span className="muted" style={{ fontSize: '0.85rem', maxWidth: 520, lineHeight: 1.45 }}>
-            Force the scheduled pipeline without waiting for cron. Uses <code style={{ fontSize: '0.8em' }}>PAPER_TRADING_AUTO</code> on the server.
+            Uses <code style={{ fontSize: '0.8em' }}>PAPER_TRADING_AUTO</code> on the server only. RSI↓MA Setup (copy): open that panel and use <strong>Run daily paper job</strong> to send live BUY rows.
           </span>
           {scheduleStatus?.scheduled && scheduleStatus.nextRun && (
             <span className="muted" style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
@@ -381,6 +381,18 @@ export function PaperTradingPanel() {
             </span>
           )}
         </div>
+
+        {scheduleStatus != null && (
+          <p className="muted" style={{ margin: '0 0 16px', fontSize: '0.8rem', lineHeight: 1.5 }}>
+            <strong>Daily cron:</strong> bar exits (if on), then auto-ticks every RSI↓MA copy <strong>live daily BUY</strong>{' '}
+            found in MongoDB candles when{' '}
+            <code style={{ fontSize: '0.85em' }}>PAPER_TRADING_RSI_MA_COPY_LIVE</code> is on (default). Notional: ₹
+            {scheduleStatus.paperOrderValueInr ?? '—'}. Extra env rows:{' '}
+            <strong>{scheduleStatus.autoSymbolRows ?? 0}</strong> (<code>PAPER_TRADING_AUTO</code>, requires{' '}
+            <code>PAPER_TRADING_AUTO_ENABLED=1</code>). Disable live scan: set{' '}
+            <code>PAPER_TRADING_RSI_MA_COPY_LIVE=0</code>.
+          </p>
+        )}
 
         {forceDailyError && (
           <p className="bot-live-error" style={{ marginBottom: 12 }}>{forceDailyError}</p>
@@ -409,12 +421,26 @@ export function PaperTradingPanel() {
             </p>
             {Array.isArray(forceDailyResult.auto) && forceDailyResult.auto.length > 0 && (
               <ul className="muted" style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: '0.82rem' }}>
-                {forceDailyResult.auto.map((r) => (
-                  <li key={`${r.setupId}-${r.symbol}`}>
-                    <strong>{r.symbol}</strong> ({r.setupId}): {r.action ?? '—'}
-                    {r.error ? ` — ${r.error}` : ''}
-                  </li>
-                ))}
+                {forceDailyResult.auto.map((r) => {
+                  const sig = r.snapshot?.signal_type;
+                  const expl = typeof r.snapshot?.explanation === 'string' ? r.snapshot.explanation.trim() : '';
+                  const explShort = expl.length > 180 ? `${expl.slice(0, 180)}…` : expl;
+                  return (
+                    <li key={`${r.setupId}-${r.symbol}`} style={{ marginBottom: 6 }}>
+                      <div>
+                        <strong>{r.symbol}</strong> ({r.setupId}): {r.action ?? '—'}
+                        {sig != null && r.action === 'NONE' ? (
+                          <span>{` · latest bar: ${sig}`}</span>
+                        ) : null}
+                        {r.error ? ` — ${r.error}` : ''}
+                        {r.message && r.action === 'NONE' && !expl ? ` — ${r.message}` : ''}
+                      </div>
+                      {expl && (r.action === 'NONE' || r.action === 'SKIP') ? (
+                        <div style={{ fontSize: '0.78rem', opacity: 0.9, marginTop: 2 }}>{explShort}</div>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -673,8 +699,19 @@ export function PaperTradingPanel() {
                     const d = computeOpenPositionDisplay(p);
                     const levelParts = [];
                     if (d.stopLossPrice != null) levelParts.push(`SL ₹${d.stopLossPrice.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
-                    if (d.partialTpPrice != null) levelParts.push(`Part TP ₹${d.partialTpPrice.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
-                    if (d.rsiRemainderExit != null) levelParts.push(`RSI ≥${d.rsiRemainderExit} (remainder)`);
+                    if (d.partialTpPrice != null) {
+                      const pct = d.partialExitQtyPercent;
+                      if (pct != null && pct >= 100) {
+                        levelParts.push(`TP ₹${d.partialTpPrice.toLocaleString('en-IN', { maximumFractionDigits: 2 })} (100% — full)`);
+                      } else {
+                        levelParts.push(
+                          `Part TP ₹${d.partialTpPrice.toLocaleString('en-IN', { maximumFractionDigits: 2 })}${pct != null ? ` (${pct}% qty)` : ''}`,
+                        );
+                      }
+                    }
+                    if (d.rsiRemainderExit != null && (d.partialExitQtyPercent == null || d.partialExitQtyPercent < 100)) {
+                      levelParts.push(`RSI ≥${d.rsiRemainderExit} (remainder)`);
+                    }
                     if (d.maxHoldingDays != null && d.maxHoldingBars == null) levelParts.push(`${d.maxHoldingDays}d max`);
                     if (d.series) levelParts.push(`${d.series} bars`);
                     if (d.partialTpDone) levelParts.push('partial done');

@@ -13,7 +13,7 @@ import {
   getInstruments,
 } from '../services/kiteApi.js';
 import { getHistoricalCandles } from '../services/kiteHistorical.js';
-import { syncNseEquityHistorical } from '../services/KiteNseHistoricalSync.js';
+import { syncNseEquityHistoricalFast } from '../services/KiteNseHistoricalSync.js';
 import { setKiteSession, getKiteSession, removeKiteSession } from '../kiteSessionStore.js';
 import { logger } from '../logger.js';
 import { Candle } from '../database/models/Candle.js';
@@ -624,7 +624,7 @@ router.post('/sync-nse-historical', requireKiteSession, async (req, res) => {
     if (req.body?.instrument_token != null) opts.instrument_token = req.body.instrument_token;
     if (req.body?.tradingsymbol != null) opts.tradingsymbol = req.body.tradingsymbol;
     const t0 = Date.now();
-    const result = await syncNseEquityHistorical(session, opts);
+    const result = await syncNseEquityHistoricalFast(session, opts);
     const durationMs = Date.now() - t0;
     logger.info('KiteNseHistoricalSync done', { ...result, durationMs });
     res.json({

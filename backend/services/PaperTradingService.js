@@ -17,6 +17,7 @@ import { evaluate as evaluateEmaCrossover } from './emaCrossover.js';
 import { computeIndicatorSeries } from './IndicatorService.js';
 import { paperTradingStore } from './PaperTradingStore.js';
 import { persistPaperClosedTrade } from './paperTradePersistence.js';
+import { savePaperPortfolioState } from './paperPortfolioPersistence.js';
 import { logger } from '../logger.js';
 
 const RSI_MA_DAILY_FETCH_FOR_MONTHLY = 5000;
@@ -181,7 +182,7 @@ function qtyFromOrderValue(orderValueInr, price) {
 }
 
 /**
- * BUY open: rsi-ma-setup-copy / eighty-percent use strategy entry (first dip-below-40 close), same as backtest + signals UI.
+ * BUY open: rsi-ma-setup-copy uses lowest low while RSI is below 40; eighty-percent uses first dip-below-40 close — same as backtest + signals UI.
  * SELL / exit paths use latest bar close when available.
  * @param {string} setupId
  * @param {{ currentPrice?: number|null, entryPrice?: number|null }} snap
@@ -276,6 +277,7 @@ function defaultPaperRulesTemplate(setupId, opts) {
       series: opts.series != null ? String(opts.series) : 'day',
       profitTargetPct: opts.profitTargetPct,
       rsiRemainderExit: opts.rsiRemainderExit,
+      partialTpFraction: opts.partialTpFraction,
       maxHoldingDays: normMaxHoldingDays(opts.maxHoldingDays, 7),
       partialTpDone: false,
     };
@@ -430,7 +432,11 @@ export async function tryPaperExitForOpenPosition(store, setupId, sym, opts) {
       lastBar,
       rsiNow,
       barsHeld,
-      { profitTargetPct: rules.profitTargetPct, rsiRemainderExit: rules.rsiRemainderExit },
+      {
+        profitTargetPct: rules.profitTargetPct,
+        rsiRemainderExit: rules.rsiRemainderExit,
+        partialTpFraction: rules.partialTpFraction,
+      },
     );
 
     let partialThisBar = null;
@@ -543,98 +549,102 @@ export async function tryPaperExitForOpenPosition(store, setupId, sym, opts) {
  * @param {import('./PaperTradingStore.js').PaperTradingStore} store
  */
 export async function applyPaperTick(store, setupId, symbol, orderValueInr, opts = {}) {
-  const sym = symTrim(symbol);
+  try {
+    const sym = symTrim(symbol);
 
-  if (store.getOpen(setupId, sym)) {
-    const exitOut = await tryPaperExitForOpenPosition(store, setupId, sym, opts);
-    if (exitOut) return exitOut;
-    const holdSnap = await evaluatePaperSetup(setupId, sym, opts);
-    if (holdSnap.error) {
-      return { ok: false, error: holdSnap.error, snapshot: holdSnap, state: store.getState() };
-    }
-    return {
-      ok: true,
-      action: 'NONE',
-      snapshot: holdSnap,
-      message: 'Open position — skipped new entry until exit (SL / target / max hold / rules).',
-      state: store.getState(),
-    };
-  }
-
-  const snap = await evaluatePaperSetup(setupId, sym, opts);
-  if (snap.error) {
-    return { ok: false, error: snap.error, snapshot: snap };
-  }
-
-  const { priceForBuyOpen, priceForExit } = resolvePaperExecutionPrices(setupId, snap);
-
-  const open = store.getOpen(setupId, sym);
-
-  if (snap.signal_type === 'SELL' && open) {
-    if (priceForExit == null || priceForExit <= 0) {
-      return { ok: false, error: 'No usable price for paper execution.', snapshot: snap };
-    }
-    const closed = store.closeLong(setupId, symTrim(symbol), priceForExit, 'signal_sell', snap);
-    await persistAfterClose(store, closed.trade, snap);
-    return {
-      ok: closed.success,
-      action: 'CLOSE',
-      snapshot: snap,
-      trade: closed.trade,
-      error: closed.error,
-      state: store.getState(),
-    };
-  }
-
-  if (snap.signal_type === 'BUY' && !open) {
-    if (priceForBuyOpen == null || priceForBuyOpen <= 0) {
-      return { ok: false, error: 'No usable price for paper execution.', snapshot: snap };
-    }
-    const qty = qtyFromOrderValue(orderValueInr, priceForBuyOpen);
-    if (qty < 1) {
+    if (store.getOpen(setupId, sym)) {
+      const exitOut = await tryPaperExitForOpenPosition(store, setupId, sym, opts);
+      if (exitOut) return exitOut;
+      const holdSnap = await evaluatePaperSetup(setupId, sym, opts);
+      if (holdSnap.error) {
+        return { ok: false, error: holdSnap.error, snapshot: holdSnap, state: store.getState() };
+      }
       return {
-        ok: false,
-        action: 'SKIP',
-        reason: 'Computed quantity < 1 (raise order value or pick a cheaper symbol).',
-        snapshot: snap,
+        ok: true,
+        action: 'NONE',
+        snapshot: holdSnap,
+        message: 'Open position — skipped new entry until exit (SL / target / max hold / rules).',
         state: store.getState(),
       };
     }
-    const opened = store.openLong({
-      setupId,
-      symbol: sym,
-      tradingsymbol: sym,
-      qty,
-      price: priceForBuyOpen,
-      orderValueInr: Number(orderValueInr),
-      snapshot: {
-        ...snap,
-        evaluatedAt: new Date().toISOString(),
-      },
-      paperRules: buildPaperRulesForOpen(setupId, snap, opts),
-    });
+
+    const snap = await evaluatePaperSetup(setupId, sym, opts);
+    if (snap.error) {
+      return { ok: false, error: snap.error, snapshot: snap };
+    }
+
+    const { priceForBuyOpen, priceForExit } = resolvePaperExecutionPrices(setupId, snap);
+
+    const open = store.getOpen(setupId, sym);
+
+    if (snap.signal_type === 'SELL' && open) {
+      if (priceForExit == null || priceForExit <= 0) {
+        return { ok: false, error: 'No usable price for paper execution.', snapshot: snap };
+      }
+      const closed = store.closeLong(setupId, symTrim(symbol), priceForExit, 'signal_sell', snap);
+      await persistAfterClose(store, closed.trade, snap);
+      return {
+        ok: closed.success,
+        action: 'CLOSE',
+        snapshot: snap,
+        trade: closed.trade,
+        error: closed.error,
+        state: store.getState(),
+      };
+    }
+
+    if (snap.signal_type === 'BUY' && !open) {
+      if (priceForBuyOpen == null || priceForBuyOpen <= 0) {
+        return { ok: false, error: 'No usable price for paper execution.', snapshot: snap };
+      }
+      const qty = qtyFromOrderValue(orderValueInr, priceForBuyOpen);
+      if (qty < 1) {
+        return {
+          ok: false,
+          action: 'SKIP',
+          reason: 'Computed quantity < 1 (raise order value or pick a cheaper symbol).',
+          snapshot: snap,
+          state: store.getState(),
+        };
+      }
+      const opened = store.openLong({
+        setupId,
+        symbol: sym,
+        tradingsymbol: sym,
+        qty,
+        price: priceForBuyOpen,
+        orderValueInr: Number(orderValueInr),
+        snapshot: {
+          ...snap,
+          evaluatedAt: new Date().toISOString(),
+        },
+        paperRules: buildPaperRulesForOpen(setupId, snap, opts),
+      });
+      return {
+        ok: opened.success,
+        action: opened.success ? 'OPEN' : 'SKIP',
+        snapshot: snap,
+        position: opened.position,
+        error: opened.error,
+        state: store.getState(),
+      };
+    }
+
     return {
-      ok: opened.success,
-      action: opened.success ? 'OPEN' : 'SKIP',
+      ok: true,
+      action: 'NONE',
       snapshot: snap,
-      position: opened.position,
-      error: opened.error,
+      message:
+        snap.signal_type === 'HOLD'
+          ? 'Signal HOLD — no trade.'
+          : snap.signal_type === 'BUY' && open
+            ? 'Already long; ignored duplicate BUY.'
+            : 'No action.',
       state: store.getState(),
     };
+  } finally {
+    await savePaperPortfolioState(store);
   }
-
-  return {
-    ok: true,
-    action: 'NONE',
-    snapshot: snap,
-    message:
-      snap.signal_type === 'HOLD'
-        ? 'Signal HOLD — no trade.'
-        : snap.signal_type === 'BUY' && open
-          ? 'Already long; ignored duplicate BUY.'
-          : 'No action.',
-    state: store.getState(),
-  };
 }
 
 function symTrim(symbol) {
@@ -657,28 +667,33 @@ async function persistAfterClose(store, trade, exitSnapshot) {
  * Close at latest bar close for the setup’s timeframe / series.
  */
 export async function closePaperPositionAtMarket(store, setupId, symbol, opts = {}) {
-  const sym = symTrim(symbol);
-  const snap = await evaluatePaperSetup(setupId, sym, opts);
-  if (snap.error) return { ok: false, error: snap.error };
-  const price =
-    snap.currentPrice != null && Number.isFinite(snap.currentPrice) ? snap.currentPrice : null;
-  if (price == null || price <= 0) return { ok: false, error: 'No current price to close.' };
-  const closed = store.closeLong(setupId, sym, price, 'manual_market', snap);
-  await persistAfterClose(store, closed.trade, snap);
-  return {
-    ok: closed.success,
-    trade: closed.trade,
-    error: closed.error,
-    state: store.getState(),
-  };
+  try {
+    const sym = symTrim(symbol);
+    const snap = await evaluatePaperSetup(setupId, sym, opts);
+    if (snap.error) return { ok: false, error: snap.error };
+    const price =
+      snap.currentPrice != null && Number.isFinite(snap.currentPrice) ? snap.currentPrice : null;
+    if (price == null || price <= 0) return { ok: false, error: 'No current price to close.' };
+    const closed = store.closeLong(setupId, sym, price, 'manual_market', snap);
+    await persistAfterClose(store, closed.trade, snap);
+    return {
+      ok: closed.success,
+      trade: closed.trade,
+      error: closed.error,
+      state: store.getState(),
+    };
+  } finally {
+    await savePaperPortfolioState(store);
+  }
 }
 
 export function getPaperTradingState() {
   return paperTradingStore.getState();
 }
 
-export function resetPaperTrading() {
+export async function resetPaperTrading() {
   paperTradingStore.reset();
+  await savePaperPortfolioState(paperTradingStore);
   return paperTradingStore.getState();
 }
 
@@ -709,6 +724,7 @@ export async function runPaperTradingDailyBarExits(store = paperTradingStore) {
       results.push({ setupId: sid, symbol: sym, action: 'ERROR', ok: false, error: err?.message ?? String(err) });
     }
   }
+  await savePaperPortfolioState(store);
   return { processed: positions.length, results };
 }
 
@@ -732,6 +748,7 @@ export async function runPaperTradingAutoTicks(store, rows) {
       series: row.series,
       profitTargetPct: row.profitTargetPct,
       rsiRemainderExit: row.rsiRemainderExit,
+      partialTpFraction: row.partialTpFraction,
       maxHoldingDays: row.maxHoldingDays,
     };
     try {

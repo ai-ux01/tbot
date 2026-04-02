@@ -15,6 +15,7 @@ import { runScheduledEvaluation, startScheduler } from '../services/SwingSchedul
 import { runSwingBacktest } from '../services/SwingBacktestService.js';
 import { BrokerSyncService } from '../services/BrokerSyncService.js';
 import { logger } from '../logger.js';
+import { persistBacktestRun, sanitizeBacktestRequest } from '../services/backtestRunPersistence.js';
 
 const router = Router();
 
@@ -138,6 +139,12 @@ router.post('/backtest', async (req, res) => {
       from: from ? new Date(from) : undefined,
       to: to ? new Date(to) : undefined,
       capital: capital != null ? Number(capital) : undefined,
+    });
+    void persistBacktestRun({
+      route: 'POST /api/swing/backtest',
+      method: 'POST',
+      params: sanitizeBacktestRequest(req),
+      response: result,
     });
     res.json(result);
   } catch (err) {

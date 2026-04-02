@@ -170,6 +170,9 @@ export async function getRsiMaSetupCopyCombined(params = {}) {
   if (params.rsiRemainderExit != null && params.rsiRemainderExit !== '') {
     q.set('rsiRemainderExit', String(params.rsiRemainderExit));
   }
+  if (params.partialTpFraction != null && params.partialTpFraction !== '') {
+    q.set('partialTpFraction', String(params.partialTpFraction));
+  }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/combined' + (query ? `?${query}` : ''));
 }
@@ -197,6 +200,9 @@ export async function getRsiMaSetupCopyBacktestCombined(params = {}) {
   }
   if (params.rsiRemainderExit != null && params.rsiRemainderExit !== '') {
     q.set('rsiRemainderExit', String(params.rsiRemainderExit));
+  }
+  if (params.partialTpFraction != null && params.partialTpFraction !== '') {
+    q.set('partialTpFraction', String(params.partialTpFraction));
   }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/backtest/combined' + (query ? `?${query}` : ''));

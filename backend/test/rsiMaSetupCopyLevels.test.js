@@ -20,6 +20,11 @@ describe('planRsiMaCopyTradeLevels', () => {
     assert.equal(p.partialTakeProfitPct, 15);
   });
 
+  it('supports partialTpFraction 100 for full exit at first TP', () => {
+    const p = planRsiMaCopyTradeLevels(100, { partialTpFraction: 100 });
+    assert.equal(p.partialTpFraction, 1);
+  });
+
   it('returns null for invalid entry', () => {
     assert.equal(planRsiMaCopyTradeLevels(NaN, {}), null);
     assert.equal(planRsiMaCopyTradeLevels(0, {}), null);

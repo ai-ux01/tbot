@@ -1,7 +1,7 @@
 /**
  * RSI↓MA Setup — copy (1D):
  * Independent duplicate of `eightyPercentSetup.js` for tuning without changing the primary strategy.
- * Same rules: RSI < 40 (first dip close = entry) → RSI > 55 → RSI crosses down through RSI MA.
+ * Same rules: RSI < 40 (lowest bar low in that dip = entry) → RSI > 55 → RSI crosses down through RSI MA.
  */
 
 import { computeIndicatorSeries } from './IndicatorService.js';
@@ -9,8 +9,8 @@ import { computeIndicatorSeries } from './IndicatorService.js';
 /** RSI must exceed this before a cross-down through MA qualifies (“returns from above 55”). */
 export const RSI_ARM_LEVEL = 55;
 export const RSI_PRECONDITION_LEVEL = 40;
-/** Min close on the signal bar. */
-export const MIN_STOCK_PRICE = 10;
+/** Min close on the RSI cross-down bar (inclusive); bars below this are ignored. */
+export const MIN_STOCK_PRICE = 20;
 const MIN_BARS = 30;
 const MAX_HOLDING_DAYS = 7;
 const DEFAULT_BUY_AMOUNT = 1000;
@@ -24,8 +24,24 @@ export const RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT = 0.10;
 export const RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT = 70;
 const PROFIT_TARGET_PCT = RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT;
 const RSI_REMAINDER_EXIT = RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT;
-/** Fraction of position sold at partial TP; remainder follows `RSI_REMAINDER_EXIT` / stop / max hold. */
-const PARTIAL_TP_FRACTION = 0.8;
+/**
+ * Default fraction of position sold at first take-profit (0.8 = 80%).
+ * Use `1` or `100` (via `normalizePartialTpFraction`) for a full exit at that price — no remainder RSI leg.
+ */
+export const RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION = 0.8;
+
+/**
+ * @param {unknown} raw - omitted → default; number > 1 treated as percent (80 → 0.8, 100 → 1)
+ * @returns {number} in (0, 1], capped at 1, floor min 0.01
+ */
+export function normalizePartialTpFraction(raw) {
+  if (raw == null || raw === '') return RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION;
+  const f = n > 1 ? n / 100 : n;
+  if (!Number.isFinite(f) || f <= 0) return RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION;
+  return Math.min(1, Math.max(0.01, f));
+}
 /**
  * Add when low ≤ avg × (1 − this). Keep **< `STOP_LOSS_PCT`** so add triggers on a shallower dip than stop;
  * intrabar order is TP → pyramid → stop (so equal % no longer skips adds).
@@ -42,20 +58,30 @@ function isFiniteNumber(v) {
  * 1) RSI dips below `precondition` (40), then
  * 2) RSI rises above `overbought` (55), then
  * 3) RSI crosses down through RSI MA (prev: RSI > MA, now: RSI <= MA).
- * Entry price = close on the first bar that dips below `precondition`.
+ * Entry price = minimum bar `low` among bars where RSI is below `precondition`, from the latest cross
+ * into below-precondition until RSI is back at or above precondition (then frozen until the pattern completes or resets).
  */
 function findBuySetups(
   rsi,
   rsiSma,
   close,
+  low,
   overbought = RSI_ARM_LEVEL,
   precondition = RSI_PRECONDITION_LEVEL,
   minPrice = MIN_STOCK_PRICE,
 ) {
   if (!Array.isArray(rsi) || !Array.isArray(rsiSma) || !Array.isArray(close) || rsi.length === 0) return [];
+  const lowArr = Array.isArray(low) && low.length === close.length ? low : close;
+
+  function barLow(idx) {
+    if (isFiniteNumber(lowArr[idx])) return Number(lowArr[idx]);
+    if (isFiniteNumber(close[idx])) return Number(close[idx]);
+    return null;
+  }
+
   const setups = [];
   let seenBelowPrecondition = false;
-  let preconditionEntryPrice = null;
+  let dipLowestLow = null;
   let armed = false;
   for (let i = 1; i < rsi.length; i++) {
     const rNow = rsi[i];
@@ -68,25 +94,33 @@ function findBuySetups(
     const dippedBelowPrecondition = rPrev >= precondition && rNow < precondition;
     if (dippedBelowPrecondition) {
       seenBelowPrecondition = true;
-      preconditionEntryPrice = isFiniteNumber(close[i]) ? Number(close[i]) : null;
+      dipLowestLow = barLow(i);
       armed = false;
+    }
+
+    if (seenBelowPrecondition && rNow < precondition) {
+      const bl = barLow(i);
+      if (isFiniteNumber(bl)) {
+        dipLowestLow = dipLowestLow == null ? bl : Math.min(dipLowestLow, bl);
+      }
     }
 
     if (seenBelowPrecondition && rNow > overbought) armed = true;
 
     const crossDownThroughMa = rPrev > mPrev && rNow <= mNow;
     const crossClose = close[i];
-    const closeOk = isFiniteNumber(crossClose) && Number(crossClose) > minPrice;
-    const entryPx = isFiniteNumber(preconditionEntryPrice) ? Number(preconditionEntryPrice) : null;
+    const closeOk = isFiniteNumber(crossClose) && Number(crossClose) >= minPrice;
+    const entryPx = isFiniteNumber(dipLowestLow) ? Number(dipLowestLow) : null;
+    const entryOk = isFiniteNumber(entryPx) && entryPx >= minPrice;
 
-    if (armed && crossDownThroughMa && closeOk && isFiniteNumber(entryPx) && entryPx > 0) {
+    if (armed && crossDownThroughMa && closeOk && entryOk && entryPx > 0) {
       setups.push({
         entryIndex: i,
         entryPrice: entryPx,
         firstDipBelow40Close: entryPx,
         previousSwingLow: entryPx,
       });
-      preconditionEntryPrice = null;
+      dipLowestLow = null;
       seenBelowPrecondition = false;
       armed = false;
     }
@@ -100,19 +134,39 @@ function findBuySetups(
  * @returns {{ signal: 'BUY'|'HOLD', entryPrice?: number, previousSwingLow?: number, entryIndex?: number, explanation: string }}
  */
 export function evaluate(ohlcv) {
-  const empty = { signal: 'HOLD', explanation: 'Insufficient data or no setup.' };
-  if (!Array.isArray(ohlcv) || ohlcv.length < MIN_BARS) return empty;
+  const n = Array.isArray(ohlcv) ? ohlcv.length : 0;
+  if (!Array.isArray(ohlcv) || n < MIN_BARS) {
+    return {
+      signal: 'HOLD',
+      explanation: `Insufficient daily bars for RSI↓MA copy (need ≥${MIN_BARS}, got ${n}). Sync NSE daily data for this symbol.`,
+    };
+  }
 
   const series = computeIndicatorSeries(ohlcv);
-  const { close, rsi, rsiSma } = series;
-  if (!close?.length || !rsi?.length || !rsiSma?.length) return empty;
+  const { close, low, rsi, rsiSma } = series;
+  if (!close?.length || !rsi?.length || !rsiSma?.length) {
+    return {
+      signal: 'HOLD',
+      explanation: 'Could not compute RSI / RSI MA on stored candles (missing or invalid OHLC).',
+    };
+  }
 
   const i = close.length - 1;
   const c = close[i];
   const r = rsi[i];
-  if (!isFiniteNumber(c) || !isFiniteNumber(r)) return empty;
+  if (!isFiniteNumber(c) || !isFiniteNumber(r)) {
+    return { signal: 'HOLD', explanation: 'Latest bar has invalid close or RSI.' };
+  }
 
-  const setups = findBuySetups(rsi, rsiSma, close, RSI_ARM_LEVEL, RSI_PRECONDITION_LEVEL, MIN_STOCK_PRICE);
+  const setups = findBuySetups(
+    rsi,
+    rsiSma,
+    close,
+    low,
+    RSI_ARM_LEVEL,
+    RSI_PRECONDITION_LEVEL,
+    MIN_STOCK_PRICE,
+  );
   const lastSetup = setups.length > 0 ? setups[setups.length - 1] : null;
   if (lastSetup && lastSetup.entryIndex === i) {
     const entry = lastSetup.entryPrice;
@@ -122,10 +176,23 @@ export function evaluate(ohlcv) {
       firstDipBelow40Close: entry,
       previousSwingLow: entry,
       entryIndex: i,
-      explanation: `RSI↓MA Setup (copy): RSI dipped below ${RSI_PRECONDITION_LEVEL}, then rose above ${RSI_ARM_LEVEL}, then crossed down through RSI MA; entry at first dip-below-${RSI_PRECONDITION_LEVEL} close ${entry.toFixed(2)} (RSI ${r.toFixed(1)}).`,
+      explanation: `RSI↓MA Setup (copy): RSI dipped below ${RSI_PRECONDITION_LEVEL}, then rose above ${RSI_ARM_LEVEL}, then crossed down through RSI MA; entry at lowest low while RSI below ${RSI_PRECONDITION_LEVEL} ${entry.toFixed(2)} (RSI ${r.toFixed(1)}).`,
     };
   }
-  return empty;
+
+  if (lastSetup && lastSetup.entryIndex !== i) {
+    const ago = i - lastSetup.entryIndex;
+    return {
+      signal: 'HOLD',
+      explanation: `HOLD: BUY only on the cross-down bar (latest bar is not that bar; last copy-setup entry was ${ago} daily bar(s) ago). Re-run after a new session bar or if the live list was from before the latest candle.`,
+    };
+  }
+
+  return {
+    signal: 'HOLD',
+    explanation:
+      'No complete setup in range (need: RSI dip below 40 → rise above 55 → RSI crosses down through RSI MA, with min close filter).',
+  };
 }
 
 /**
@@ -138,10 +205,18 @@ export function evaluateAllSetups(ohlcv) {
   if (!Array.isArray(ohlcv) || ohlcv.length < MIN_BARS) return out;
 
   const series = computeIndicatorSeries(ohlcv);
-  const { close, rsi, rsiSma } = series;
+  const { close, low, rsi, rsiSma } = series;
   if (!close?.length || !rsi?.length || !rsiSma?.length) return out;
 
-  const setups = findBuySetups(rsi, rsiSma, close, RSI_ARM_LEVEL, RSI_PRECONDITION_LEVEL, MIN_STOCK_PRICE);
+  const setups = findBuySetups(
+    rsi,
+    rsiSma,
+    close,
+    low,
+    RSI_ARM_LEVEL,
+    RSI_PRECONDITION_LEVEL,
+    MIN_STOCK_PRICE,
+  );
   for (const s of setups) out.setups.push(s);
 
   const last = evaluate(ohlcv);
@@ -152,8 +227,8 @@ export function evaluateAllSetups(ohlcv) {
 /**
  * Run RSI↓MA Setup (copy) backtest. Entry signals from evaluateAllSetups.
  * Copy-only position rules:
- * - Open with first-leg notional `buyAmount` at strategy entry (dip-below-40 close); `lotShares` = that size / entry.
- * - Intrabar order: partial profit target (PARTIAL_TP_FRACTION of qty at avg × (1 + PROFIT_TARGET_PCT)), then pyramid add (if low hits dip), then stop. Pyramid dip % should be < initial stop %.
+ * - Open with first-leg notional `buyAmount` at strategy entry (lowest low while RSI below 40); `lotShares` = that size / entry.
+ * - Intrabar order: partial profit target (fraction of qty at avg × (1 + PROFIT_TARGET_PCT)); at 100% fraction, full exit at TP instead. Then pyramid add (if low hits dip), then stop.
  * - After partial TP: remaining shares exit when RSI ≥ RSI_REMAINDER_EXIT (bar close), or stop vs same avg, or max hold / EOD.
  * - Stop: avg × (1 − STOP_LOSS_PCT) until max pyramid adds are exhausted; then avg × (1 − STOP_LOSS_AFTER_MAX_PYRAMID_PCT). Else max hold / EOD.
  * @param {Array<{ open, high, low, close, volume?, time? }>} ohlcv - Candles oldest first
@@ -192,6 +267,8 @@ export function runBacktest(ohlcv, options = {}) {
   if (rawRsi != null && Number.isFinite(Number(rawRsi))) {
     rsiRemainderExit = Math.min(95, Math.max(5, Math.round(Number(rawRsi))));
   }
+
+  const partialTpFr = normalizePartialTpFraction(options?.partialTpFraction);
 
   const { setups } = evaluateAllSetups(ohlcv);
   const entryByBar = new Map();
@@ -282,7 +359,7 @@ export function runBacktest(ohlcv, options = {}) {
     const qtyFull = position.totalQty;
     if (!Number.isFinite(investedFull) || investedFull <= 0 || !Number.isFinite(qtyFull) || qtyFull <= 0) return;
     const avgAtPartial = investedFull / qtyFull;
-    const halfQty = qtyFull * PARTIAL_TP_FRACTION;
+    const halfQty = qtyFull * partialTpFr;
     if (!Number.isFinite(halfQty) || halfQty <= 0) return;
     const pnlPart = halfQty * (tp - avgAtPartial);
     equity *= investedFull > 0 ? 1 + pnlPart / investedFull : 1;
@@ -331,6 +408,10 @@ export function runBacktest(ohlcv, options = {}) {
       }
 
       if (Number.isFinite(hi) && hi >= tp) {
+        if (partialTpFr >= 1) {
+          closePosition(i, tp, 'profit_target_full');
+          return;
+        }
         partialExitAtTp(i, tp);
         continue;
       }
@@ -408,7 +489,7 @@ export function runBacktest(ohlcv, options = {}) {
     stopLossPct: STOP_LOSS_PCT,
     stopLossAfterMaxPyramidPct: STOP_LOSS_AFTER_MAX_PYRAMID_PCT,
     profitTargetPct,
-    partialTpFraction: PARTIAL_TP_FRACTION,
+    partialTpFraction: partialTpFr,
     rsiRemainderExit,
   };
 }
@@ -449,6 +530,8 @@ export function resolveRsiMaCopyPaperIntrabarActions(state, bar, rsiNow, barsHel
     rsiRemainderExit = Math.min(95, Math.max(5, Math.round(Number(rawRsi))));
   }
 
+  const partialTpFr = normalizePartialTpFraction(options?.partialTpFraction);
+
   const hi = bar?.high != null ? Number(bar.high) : NaN;
   const lo = bar?.low != null ? Number(bar.low) : NaN;
   const cl = bar?.close != null ? Number(bar.close) : NaN;
@@ -485,7 +568,11 @@ export function resolveRsiMaCopyPaperIntrabarActions(state, bar, rsiNow, barsHel
     }
 
     if (Number.isFinite(hi) && hi >= tp) {
-      let sellQty = Math.floor(qty * PARTIAL_TP_FRACTION);
+      if (partialTpFr >= 1) {
+        actions.push({ type: 'close', price: tp, reason: 'profit_target_full' });
+        break;
+      }
+      let sellQty = Math.floor(qty * partialTpFr);
       if (sellQty < 1) {
         actions.push({ type: 'close', price: tp, reason: 'profit_target_full_bar' });
         break;
@@ -525,6 +612,8 @@ export function planRsiMaCopyTradeLevels(avgEntry, options = {}) {
     rsiRemainderExit = Math.min(95, Math.max(5, Math.round(Number(rawRsi))));
   }
 
+  const partialTpFr = normalizePartialTpFraction(options?.partialTpFraction);
+
   const pyramidAdds = 0;
   const slPct = pyramidAdds >= MAX_PYRAMID_ADDS ? STOP_LOSS_AFTER_MAX_PYRAMID_PCT : STOP_LOSS_PCT;
   const slPrice = avg * (1 - slPct);
@@ -538,7 +627,7 @@ export function planRsiMaCopyTradeLevels(avgEntry, options = {}) {
     stopLossPct: Math.round(slPct * 10000) / 100,
     partialTakeProfitPct: Math.round(profitTargetPct * 10000) / 100,
     rsiRemainderExit,
-    partialTpFraction: PARTIAL_TP_FRACTION,
+    partialTpFraction: partialTpFr,
   };
 }
 
@@ -548,7 +637,9 @@ export default {
   runBacktest,
   resolveRsiMaCopyPaperIntrabarActions,
   planRsiMaCopyTradeLevels,
+  normalizePartialTpFraction,
   MIN_STOCK_PRICE,
   RSI_ARM_LEVEL,
   RSI_PRECONDITION_LEVEL,
+  RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
 };

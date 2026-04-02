@@ -29,6 +29,8 @@ export function computeOpenPositionDisplay(p) {
   let maxHoldingDays = null;
   let maxHoldingBars = null;
   let notes = [];
+  /** @type {number | null} */
+  let partialExitQtyPercent = null;
 
   const kind = rules.kind || (setupId === 'rsi-ma-setup-copy' ? 'rsi-ma-setup-copy' : setupId === 'eighty-percent' ? 'eighty-percent' : rules.kind);
 
@@ -37,6 +39,15 @@ export function computeOpenPositionDisplay(p) {
     const slPct = 0.03;
     stopLossPrice = round2(avg * (1 - slPct));
     partialTpPrice = round2(avg * (1 + pt));
+    let partialQtyFrac = 0.8;
+    const rawFrac = rules.partialTpFraction;
+    if (rawFrac != null && rawFrac !== '') {
+      const n = Number(rawFrac);
+      if (Number.isFinite(n) && n > 0) {
+        partialQtyFrac = n > 1 ? n / 100 : n;
+        partialQtyFrac = Math.min(1, Math.max(0.01, partialQtyFrac));
+      }
+    }
     rsiRemainderExit =
       rules.rsiRemainderExit != null && Number.isFinite(Number(rules.rsiRemainderExit))
         ? Math.min(95, Math.max(5, Math.round(Number(rules.rsiRemainderExit))))
@@ -45,6 +56,10 @@ export function computeOpenPositionDisplay(p) {
       rules.maxHoldingDays != null && Number.isFinite(Number(rules.maxHoldingDays))
         ? Math.floor(Number(rules.maxHoldingDays))
         : 7;
+    partialExitQtyPercent = Math.round(partialQtyFrac * 100);
+    if (partialQtyFrac >= 1) {
+      notes.push('First take-profit exits 100% of position (no separate remainder RSI leg).');
+    }
     if (rules.partialTpDone) notes.push('Partial TP already taken — remainder exits on SL, RSI target, or max hold');
   } else if (setupId === 'eighty-percent' || kind === 'eighty-percent') {
     stopLossPrice = round2(avg * 0.95);
@@ -98,6 +113,7 @@ export function computeOpenPositionDisplay(p) {
     instrumentLabel,
     stopLossPrice,
     partialTpPrice,
+    partialExitQtyPercent,
     rsiRemainderExit,
     maxHoldingDays,
     maxHoldingBars,

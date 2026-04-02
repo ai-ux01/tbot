@@ -3,6 +3,7 @@ import { runBacktest } from '../bot/BacktestingEngine.js';
 import { BacktestResult } from '../database/models/BacktestResult.js';
 import { isDbConnected } from '../database/connection.js';
 import { logger } from '../logger.js';
+import { persistBacktestRun, sanitizeBacktestRequest, listBacktestRuns } from '../services/backtestRunPersistence.js';
 
 const router = Router();
 const RESULTS_LIMIT = 50;
@@ -52,6 +53,12 @@ router.post('/run', async (req, res) => {
         totalTrades: result.totalTrades,
         totalPnL: result.totalPnL,
       });
+      void persistBacktestRun({
+        route: 'POST /api/backtest/run',
+        method: 'POST',
+        params: sanitizeBacktestRequest(req),
+        response: result,
+      });
     }
 
     res.json(result);
@@ -80,6 +87,26 @@ router.get('/results', async (req, res) => {
   } catch (err) {
     logger.error('GET /api/backtest/results', { error: err?.message });
     res.status(502).json({ error: err?.message ?? 'Failed to fetch results' });
+  }
+});
+
+/**
+ * GET /api/backtest/runs?limit=&skip=
+ * Full stored backtest payloads (signals hub + /run + swing). Newest first.
+ */
+router.get('/runs', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const data = await listBacktestRuns({
+      limit: req.query.limit,
+      skip: req.query.skip,
+    });
+    res.json(data);
+  } catch (err) {
+    logger.error('GET /api/backtest/runs', { error: err?.message });
+    res.status(502).json({ error: err?.message ?? 'Failed to fetch runs' });
   }
 });
 

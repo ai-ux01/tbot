@@ -7,13 +7,17 @@
 import { getInstruments } from './kiteApi.js';
 import { getHistoricalCandles } from './kiteHistorical.js';
 import { Candle } from '../database/models/Candle.js';
+import { SyncCheckpoint } from '../database/models/SyncCheckpoint.js';
 import { isDbConnected } from '../database/connection.js';
 import { logger } from '../logger.js';
 import { istStartOfCalendarDay, toDateStrIST } from '../utils/istExchangeDate.js';
+import pLimit from 'p-limit';
 
-const DELAY_MS = 350;
+const DELAY_MS = 500;
 const YEARS_BACK = 5;
 const CHUNK_DAYS_60M = 60;
+const CHUNK_DAYS_DAY = 365;
+const SYNC_SCOPE_NSE_HISTORICAL = 'kite_nse_historical';
 
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -52,6 +56,36 @@ async function getLastUpdatedAt(symbol) {
   return doc.updatedAt instanceof Date ? doc.updatedAt : new Date(doc.updatedAt);
 }
 
+async function getCheckpoint(symbol, timeframe) {
+  if (!isDbConnected()) return null;
+  const doc = await SyncCheckpoint.findOne({
+    scope: SYNC_SCOPE_NSE_HISTORICAL,
+    symbol,
+    timeframe,
+  })
+    .select('lastSyncedAt')
+    .lean();
+  if (!doc?.lastSyncedAt) return null;
+  return doc.lastSyncedAt instanceof Date ? doc.lastSyncedAt : new Date(doc.lastSyncedAt);
+}
+
+async function setCheckpoint(symbol, timeframe, lastSyncedAt) {
+  if (!isDbConnected() || !(lastSyncedAt instanceof Date) || Number.isNaN(lastSyncedAt.getTime())) return;
+  await SyncCheckpoint.updateOne(
+    {
+      scope: SYNC_SCOPE_NSE_HISTORICAL,
+      symbol,
+      timeframe,
+    },
+    {
+      $set: {
+        lastSyncedAt,
+      },
+    },
+    { upsert: true }
+  );
+}
+
 /**
  * True if the given date is "today" in IST (Asia/Kolkata).
  */
@@ -83,6 +117,44 @@ function marketRange(fromDate, toDate, startTime = '09:15:00', endTime = '15:30:
   return {
     from: `${toDateStrIST(fromDate)} ${startTime}`,
     to: `${toDateStrIST(toDate)} ${endTime}`,
+  };
+}
+
+function buildRanges(start, end, chunkDays) {
+  if (!(start instanceof Date) || Number.isNaN(start.getTime())) return [];
+  if (!(end instanceof Date) || Number.isNaN(end.getTime())) return [];
+  if (start >= end) return [];
+
+  const ranges = [];
+  for (let d = new Date(start); d < end; ) {
+    const chunkEnd = new Date(d);
+    chunkEnd.setDate(chunkEnd.getDate() + chunkDays);
+    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
+    ranges.push(marketRange(d, chunkEnd, '09:15:00', '15:30:00'));
+    d = new Date(chunkEnd);
+    d.setDate(d.getDate() + 1);
+  }
+  return ranges;
+}
+
+function checkpointLastSyncIso(checkpointDay, checkpoint60m) {
+  return {
+    day: checkpointDay ? checkpointDay.toISOString() : null,
+    '60minute': checkpoint60m ? checkpoint60m.toISOString() : null,
+  };
+}
+
+function newStartKiteFrom(dayRanges, ranges60m) {
+  return {
+    day: dayRanges[0]?.from ?? null,
+    '60minute': ranges60m[0]?.from ?? null,
+  };
+}
+
+function newEndKiteTo(dayRanges, ranges60m) {
+  return {
+    day: dayRanges.length ? dayRanges[dayRanges.length - 1].to : null,
+    '60minute': ranges60m.length ? ranges60m[ranges60m.length - 1].to : null,
   };
 }
 
@@ -155,6 +227,7 @@ async function syncInstrumentInterval(apiKey, accessToken, instrument, interval,
   const tradingsymbol = instrument.tradingsymbol != null ? String(instrument.tradingsymbol).trim() : null;
   const timeframe = interval === 'day' ? 'day' : '60minute';
   let total = 0;
+  let hadError = false;
   for (const { from, to } of fromToRanges) {
     try {
       const candles = await getHistoricalCandles({
@@ -183,6 +256,7 @@ async function syncInstrumentInterval(apiKey, accessToken, instrument, interval,
         });
       }
     } catch (err) {
+      hadError = true;
       logger.warn('KiteNseHistoricalSync', {
         symbol,
         interval,
@@ -193,7 +267,7 @@ async function syncInstrumentInterval(apiKey, accessToken, instrument, interval,
     }
     await delay(DELAY_MS);
   }
-  return total;
+  return { total, hadError, timeframe };
 }
 
 /**
@@ -243,22 +317,9 @@ export async function syncNseEquityHistorical(session, options = {}) {
 
   const todayStart = istTodayStart;
 
-  const fullDayRanges = [{ ...marketRange(start, now, '09:15:00', '15:30:00') }];
-  const incrementalDayRanges = [{ ...marketRange(todayStart, now, '09:15:00', '15:30:00') }];
-
-  const fullRanges60m = [];
-  for (let d = new Date(start); d < now; ) {
-    const end = new Date(d);
-    end.setDate(end.getDate() + CHUNK_DAYS_60M);
-    if (end > now) end.setTime(now.getTime());
-    fullRanges60m.push(marketRange(d, end));
-    d = new Date(end);
-    d.setDate(d.getDate() + 1);
-  }
-  const incrementalRanges60m = [{ ...marketRange(todayStart, now, '09:15:00', '15:30:00') }];
-
   let candlesDay = 0;
   let candles60m = 0;
+  let syncWindow = null;
 
   for (let i = 0; i < instruments.length; i++) {
     const inst = instruments[i];
@@ -267,42 +328,89 @@ export async function syncNseEquityHistorical(session, options = {}) {
     try {
       const lastUpdated = await getLastUpdatedAt(token);
       if (lastUpdated && isTodayIST(lastUpdated)) {
-        logger.info('KiteNseHistoricalSync', { symbol: token, msg: 'Skipped (already updated today)' });
+        const [cpDay, cp60] = await Promise.all([
+          getCheckpoint(token, 'day'),
+          getCheckpoint(token, '60minute'),
+        ]);
+        logger.info('KiteNseHistoricalSync', {
+          symbol: token,
+          tradingsymbol: inst.tradingsymbol,
+          msg: 'Skipped (already updated today)',
+          lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
+        });
+        if (instruments.length === 1) {
+          syncWindow = {
+            instrument_token: token,
+            tradingsymbol: inst.tradingsymbol,
+            skipped: true,
+            reason: 'already_updated_today_ist',
+            lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
+          };
+        }
         continue;
       }
       const [latestDayTime, latest60mTime] = await Promise.all([
         getLatestCandleTime(token, 'day'),
         getLatestCandleTime(token, '60minute'),
       ]);
-      const dayIncremental = isUpToDate(latestDayTime, now);
-      const min60Incremental = isUpToDate(latest60mTime, now);
-      const dayRanges = dayIncremental ? incrementalDayRanges : fullDayRanges;
-      const ranges60m = min60Incremental ? incrementalRanges60m : fullRanges60m;
+      const [checkpointDay, checkpoint60m] = await Promise.all([
+        getCheckpoint(token, 'day'),
+        getCheckpoint(token, '60minute'),
+      ]);
+      const dayIncremental = isUpToDate(latestDayTime, now) || !!checkpointDay;
+      const min60Incremental = isUpToDate(latest60mTime, now) || !!checkpoint60m;
 
-      if (dayIncremental || min60Incremental) {
-        logger.info('KiteNseHistoricalSync', {
-          symbol: token,
-          dayIncremental: dayIncremental || undefined,
-          min60Incremental: min60Incremental || undefined,
-        });
+      const dayStart = checkpointDay
+        ? new Date(Math.max(checkpointDay.getTime(), start.getTime()))
+        : (dayIncremental ? todayStart : start);
+      const min60Start = checkpoint60m
+        ? new Date(Math.max(checkpoint60m.getTime(), start.getTime()))
+        : (min60Incremental ? todayStart : start);
+
+      const dayRanges = buildRanges(dayStart, now, CHUNK_DAYS_DAY);
+      const ranges60m = buildRanges(min60Start, now, CHUNK_DAYS_60M);
+
+      logger.info('KiteNseHistoricalSync', {
+        symbol: token,
+        tradingsymbol: inst.tradingsymbol,
+        dayIncremental: dayIncremental || undefined,
+        min60Incremental: min60Incremental || undefined,
+        lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+        newStartKiteFrom: newStartKiteFrom(dayRanges, ranges60m),
+        newEndKiteTo: newEndKiteTo(dayRanges, ranges60m),
+        rangeChunks: { day: dayRanges.length, '60minute': ranges60m.length },
+      });
+
+      if (instruments.length === 1) {
+        syncWindow = {
+          instrument_token: token,
+          tradingsymbol: inst.tradingsymbol,
+          lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+          newStartKiteFrom: newStartKiteFrom(dayRanges, ranges60m),
+          newEndKiteTo: newEndKiteTo(dayRanges, ranges60m),
+        };
       }
 
-      const dayCount = await syncInstrumentInterval(
+      const daySync = await syncInstrumentInterval(
         apiKey,
         accessToken,
         inst,
         'day',
         dayRanges,
       );
-      candlesDay += dayCount;
-      const count60 = await syncInstrumentInterval(
+      candlesDay += daySync.total;
+      const min60Sync = await syncInstrumentInterval(
         apiKey,
         accessToken,
         inst,
         '60minute',
         ranges60m,
       );
-      candles60m += count60;
+      candles60m += min60Sync.total;
+      await Promise.all([
+        !daySync.hadError ? setCheckpoint(token, 'day', now) : Promise.resolve(),
+        !min60Sync.hadError ? setCheckpoint(token, '60minute', now) : Promise.resolve(),
+      ]);
       if ((i + 1) % 50 === 0) {
         logger.info('KiteNseHistoricalSync', {
           progress: `${i + 1}/${instruments.length}`,
@@ -325,5 +433,233 @@ export async function syncNseEquityHistorical(session, options = {}) {
     candlesDay,
     candles60m,
     errors: errors.slice(0, 50),
+    ...(syncWindow ? { syncWindow } : {}),
+  };
+}
+
+
+// CONFIG (tune based on Zerodha limits)
+const CONCURRENCY = 5;
+const RETRIES = 3;
+
+// Retry wrapper
+async function withRetry(fn, retries = RETRIES) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === retries - 1) throw err;
+      await delay(500 * (i + 1)); // exponential backoff
+    }
+  }
+}
+
+import Bottleneck from 'bottleneck';
+
+// 🔐 Zerodha-safe limiter
+const zerodhaLimiter = new Bottleneck({
+  maxConcurrent: 3,        // parallel API calls
+  minTime: 350,            // ~3 req/sec
+  reservoir: 180,          // per minute cap
+  reservoirRefreshAmount: 180,
+  reservoirRefreshInterval: 60 * 1000,
+});
+
+// 🔁 Rate-limited wrapper
+function rateLimitedCall(fn) {
+  return zerodhaLimiter.schedule(() => fn());
+}
+
+// 🔁 Retry + 429 handling
+async function withRetryAndThrottle(fn, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await rateLimitedCall(fn);
+    } catch (err) {
+      const isRateLimit =
+        err?.status === 429 ||
+        err?.message?.toLowerCase().includes('too many requests');
+
+      if (isRateLimit) {
+        const wait = 1000 * (i + 2); // exponential backoff
+        logger.warn('Rate limit hit, backing off', { wait });
+        await delay(wait);
+        continue;
+      }
+
+      if (i === retries - 1) throw err;
+      await delay(500 * (i + 1));
+    }
+  }
+}
+
+export async function syncNseEquityHistoricalFast(session, options = {}) {
+  const { accessToken, apiKey } = session;
+
+  if (!isDbConnected()) {
+    throw new Error('Database not connected. Set MONGODB_URI and restart.');
+  }
+
+  const limitOpt = options.limit != null ? Math.max(0, Number(options.limit)) : null;
+  const instrumentToken = options.instrument_token?.toString().trim();
+  const tradingsymbol = options.tradingsymbol?.toString().trim()?.toLowerCase();
+
+  const errors = [];
+
+  // 🔹 Step 1: Fetch instruments (also rate-limited)
+  const { instruments: rawList } = await withRetryAndThrottle(() =>
+    getInstruments(accessToken, apiKey, 'NSE')
+  );
+
+  let list = (rawList || []).filter(
+    (row) => String(row.instrument_type || '').toUpperCase() === 'EQ'
+  );
+
+  if (instrumentToken) {
+    list = list.filter((r) => String(r.instrument_token) === instrumentToken);
+  }
+
+  if (tradingsymbol) {
+    list = list.filter(
+      (r) => String(r.tradingsymbol || '').toLowerCase() === tradingsymbol
+    );
+  }
+
+  if (!list.length) {
+    throw new Error('No NSE equity instruments to sync');
+  }
+
+  const instruments = limitOpt ? list.slice(0, limitOpt) : list;
+
+  const now = new Date();
+  const istTodayStart = istStartOfCalendarDay(now);
+  const start = new Date(istTodayStart);
+  start.setFullYear(start.getFullYear() - YEARS_BACK);
+  const todayStart = istTodayStart;
+
+  const limit = pLimit(CONCURRENCY);
+  const singleInstrument = instruments.length === 1;
+
+  const rows = await Promise.all(
+    instruments.map((inst, index) =>
+      limit(async () => {
+        const token = String(inst.instrument_token || '');
+        if (!token) return { candlesDay: 0, candles60m: 0, syncWindow: null };
+
+        try {
+          const lastUpdated = await getLastUpdatedAt(token);
+          if (lastUpdated && isTodayIST(lastUpdated)) {
+            const [cpDay, cp60] = await Promise.all([
+              getCheckpoint(token, 'day'),
+              getCheckpoint(token, '60minute'),
+            ]);
+            logger.info('KiteNseHistoricalSyncFast', {
+              symbol: token,
+              tradingsymbol: inst.tradingsymbol,
+              msg: 'Skipped (already updated today)',
+              lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
+            });
+            const sw = singleInstrument
+              ? {
+                  instrument_token: token,
+                  tradingsymbol: inst.tradingsymbol,
+                  skipped: true,
+                  reason: 'already_updated_today_ist',
+                  lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
+                }
+              : null;
+            return { candlesDay: 0, candles60m: 0, syncWindow: sw };
+          }
+
+          const [latestDayTime, latest60mTime] = await Promise.all([
+            withRetryAndThrottle(() => getLatestCandleTime(token, 'day')),
+            withRetryAndThrottle(() => getLatestCandleTime(token, '60minute')),
+          ]);
+          const [checkpointDay, checkpoint60m] = await Promise.all([
+            getCheckpoint(token, 'day'),
+            getCheckpoint(token, '60minute'),
+          ]);
+
+          const dayIncremental = isUpToDate(latestDayTime, now) || !!checkpointDay;
+          const min60Incremental = isUpToDate(latest60mTime, now) || !!checkpoint60m;
+
+          const dayStart = checkpointDay
+            ? new Date(Math.max(checkpointDay.getTime(), start.getTime()))
+            : (dayIncremental ? todayStart : start);
+          const min60Start = checkpoint60m
+            ? new Date(Math.max(checkpoint60m.getTime(), start.getTime()))
+            : (min60Incremental ? todayStart : start);
+
+          const dayRanges = buildRanges(dayStart, now, CHUNK_DAYS_DAY);
+          const ranges60m = buildRanges(min60Start, now, CHUNK_DAYS_60M);
+
+          logger.info('KiteNseHistoricalSyncFast', {
+            symbol: token,
+            tradingsymbol: inst.tradingsymbol,
+            dayIncremental: dayIncremental || undefined,
+            min60Incremental: min60Incremental || undefined,
+            lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+            newStartKiteFrom: newStartKiteFrom(dayRanges, ranges60m),
+            newEndKiteTo: newEndKiteTo(dayRanges, ranges60m),
+            rangeChunks: { day: dayRanges.length, '60minute': ranges60m.length },
+          });
+
+          const sw = singleInstrument
+            ? {
+                instrument_token: token,
+                tradingsymbol: inst.tradingsymbol,
+                lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+                newStartKiteFrom: newStartKiteFrom(dayRanges, ranges60m),
+                newEndKiteTo: newEndKiteTo(dayRanges, ranges60m),
+              }
+            : null;
+
+          const [daySync, min60Sync] = await Promise.all([
+            withRetryAndThrottle(() =>
+              syncInstrumentInterval(apiKey, accessToken, inst, 'day', dayRanges)
+            ),
+            withRetryAndThrottle(() =>
+              syncInstrumentInterval(apiKey, accessToken, inst, '60minute', ranges60m)
+            ),
+          ]);
+
+          await Promise.all([
+            !daySync.hadError ? setCheckpoint(token, 'day', now) : Promise.resolve(),
+            !min60Sync.hadError ? setCheckpoint(token, '60minute', now) : Promise.resolve(),
+          ]);
+
+          if ((index + 1) % 50 === 0) {
+            logger.info('KiteNseHistoricalSyncFast', {
+              progress: `${index + 1}/${instruments.length}`,
+            });
+          }
+
+          return {
+            candlesDay: daySync.total,
+            candles60m: min60Sync.total,
+            syncWindow: sw,
+          };
+        } catch (err) {
+          errors.push(`${token}: ${err?.message || err}`);
+          logger.warn('Sync failed', {
+            token,
+            error: err?.message,
+          });
+          return { candlesDay: 0, candles60m: 0, syncWindow: null };
+        }
+      })
+    )
+  );
+
+  const candlesDay = rows.reduce((a, r) => a + r.candlesDay, 0);
+  const candles60m = rows.reduce((a, r) => a + r.candles60m, 0);
+  const syncWindow = singleInstrument ? (rows.find((r) => r.syncWindow)?.syncWindow ?? null) : null;
+
+  return {
+    instruments: instruments.length,
+    candlesDay,
+    candles60m,
+    errors: errors.slice(0, 50),
+    ...(syncWindow ? { syncWindow } : {}),
   };
 }

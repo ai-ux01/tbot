@@ -10,3 +10,6 @@ export const RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT =
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT * 100;
 
 export const RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT = 70;
+
+/** % of position sold at first take-profit (80 = default; 100 = full exit at that price, no remainder RSI leg). */
+export const RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT = 80;

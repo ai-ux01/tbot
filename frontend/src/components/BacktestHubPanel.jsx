@@ -12,6 +12,7 @@ import {
 import {
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
+  RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT,
 } from '../utils/rsiMaSetupCopy';
 
 const SETUPS = [
@@ -60,6 +61,7 @@ export function BacktestHubPanel() {
   const [rsiRemainderExitInput, setRsiRemainderExitInput] = useState(
     RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
   );
+  const [partialExitQtyPercent, setPartialExitQtyPercent] = useState(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -94,7 +96,11 @@ export function BacktestHubPanel() {
           data = await getEightyPercentBacktestCombined({ limit, maxHoldingDays, series });
         }
       } else if (setupId === 'rsi-dma-copy') {
-        const copyExit = { profitTargetPct: profitTargetPctInput, rsiRemainderExit: rsiRemainderExitInput };
+        const copyExit = {
+          profitTargetPct: profitTargetPctInput,
+          rsiRemainderExit: rsiRemainderExitInput,
+          partialTpFraction: partialExitQtyPercent,
+        };
         if (mode === 'single') {
           data = await postRsiMaSetupCopyBacktest({ symbol: sym, maxHoldingDays, series, ...copyExit });
         } else {
@@ -117,7 +123,7 @@ export function BacktestHubPanel() {
     } finally {
       setLoading(false);
     }
-  }, [setupId, mode, symbol, maxHoldingDays, series, limit, capital, profitTargetPctInput, rsiRemainderExitInput]);
+  }, [setupId, mode, symbol, maxHoldingDays, series, limit, capital, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent]);
 
   return (
     <div className="backtest-hub-panel">
@@ -269,6 +275,18 @@ export function BacktestHubPanel() {
                     }}
                   />
                 </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span className="muted" style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>Exit at 1st TP</span>
+                  <select
+                    className="bot-live-input"
+                    style={{ minWidth: 130 }}
+                    value={partialExitQtyPercent}
+                    onChange={(e) => setPartialExitQtyPercent(Number(e.target.value))}
+                  >
+                    <option value={80}>80% of qty</option>
+                    <option value={100}>100% (full)</option>
+                  </select>
+                </label>
                 <button
                   type="button"
                   className="btn-secondary"
@@ -277,6 +295,7 @@ export function BacktestHubPanel() {
                   onClick={() => {
                     setProfitTargetPctInput(RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT);
                     setRsiRemainderExitInput(RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT);
+                    setPartialExitQtyPercent(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
                   }}
                 >
                   Reset defaults

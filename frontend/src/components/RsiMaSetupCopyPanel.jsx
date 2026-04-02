@@ -9,6 +9,7 @@ import { paperTick, paperForceDailyPipeline } from '../api/paperTrading';
 import {
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
+  RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT,
 } from '../utils/rsiMaSetupCopy';
 import { getStoredCandlesLastUpdated } from '../api/kite';
 import { PanelWithFullscreen } from './PanelWithFullscreen';
@@ -103,7 +104,7 @@ function TradeDetailsTable({ trades, barUnit = 'day' }) {
       <thead>
         <tr>
           <th>Entry time</th>
-          <th>First dip &lt; 40 close</th>
+          <th>Lowest dip &lt; 40 (low)</th>
           <th>1st entry</th>
           <th>Avg entry</th>
           <th>Adds</th>
@@ -180,6 +181,8 @@ export function RsiMaSetupCopyPanel() {
   const [rsiRemainderExitInput, setRsiRemainderExitInput] = useState(
     RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
   );
+  /** 80 = default partial; 100 = full exit at first TP (no remainder RSI leg). */
+  const [partialExitQtyPercent, setPartialExitQtyPercent] = useState(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
   const [backtestSeries, setBacktestSeries] = useState('day');
   const [backtestDetailCache, setBacktestDetailCache] = useState({});
   const [backtestDetailLoading, setBacktestDetailLoading] = useState({});
@@ -212,6 +215,7 @@ export function RsiMaSetupCopyPanel() {
             ...(liveOnly ? { liveOnly: true } : {}),
             profitTargetPct: profitTargetPctInput,
             rsiRemainderExit: rsiRemainderExitInput,
+            partialTpFraction: partialExitQtyPercent,
           }),
           getStoredCandlesLastUpdated().catch(() => ({ items: [] })),
         ]);
@@ -239,7 +243,7 @@ export function RsiMaSetupCopyPanel() {
         setLoading(false);
       }
     },
-    [signalsListMode, startListTransition, profitTargetPctInput, rsiRemainderExitInput],
+    [signalsListMode, startListTransition, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent],
   );
 
   const placePaperBuyFromRow = useCallback(
@@ -258,6 +262,7 @@ export function RsiMaSetupCopyPanel() {
           series: 'day',
           profitTargetPct: profitTargetPctInput,
           rsiRemainderExit: rsiRemainderExitInput,
+          partialTpFraction: partialExitQtyPercent,
           maxHoldingDays,
         });
         if (!data.ok) {
@@ -298,7 +303,7 @@ export function RsiMaSetupCopyPanel() {
         setPaperBusySymbol(null);
       }
     },
-    [paperOrderValueInr, profitTargetPctInput, rsiRemainderExitInput, maxHoldingDays],
+    [paperOrderValueInr, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, maxHoldingDays],
   );
 
   useEffect(() => {
@@ -321,8 +326,17 @@ export function RsiMaSetupCopyPanel() {
     setPaperActionError(null);
     setPaperActionMessage(null);
     try {
-      const buyRows = filteredSignals
+      // Use full `signals` (all loaded BUYs for live/all mode), not `filteredSignals`. The table filter
+      // can hide BUY rows (e.g. HOLD-only view) which would otherwise send an empty body and skip client rows.
+      const searchLower = search.trim().toLowerCase();
+      const buyRows = signals
         .filter((s) => s.signal_type === 'BUY')
+        .filter((s) => {
+          if (!searchLower) return true;
+          return [s.instrument, s.tradingsymbol].some((v) =>
+            String(v || '').toLowerCase().includes(searchLower),
+          );
+        })
         .slice(0, 120)
         .map((s) => ({
           setupId: 'rsi-ma-setup-copy',
@@ -331,6 +345,7 @@ export function RsiMaSetupCopyPanel() {
           series: 'day',
           profitTargetPct: profitTargetPctInput,
           rsiRemainderExit: rsiRemainderExitInput,
+          partialTpFraction: partialExitQtyPercent,
           maxHoldingDays,
         }))
         .filter((r) => r.symbol);
@@ -340,7 +355,11 @@ export function RsiMaSetupCopyPanel() {
       const ex = data.exits?.processed ?? 0;
       const src = data.meta?.source === 'request_body' ? 'this table (BUY rows)' : 'server env PAPER_TRADING_AUTO';
       let msg = `Daily paper job: ${ex} open position(s) checked for exits, ${n} auto-tick run(s) (${src}).`;
-      if (buyRows.length > 0) msg += ` Sent ${buyRows.length} BUY row(s) from the filtered list.`;
+      if (buyRows.length > 0) {
+        msg += ` Sent ${buyRows.length} BUY row(s) from loaded signals${searchLower ? ' (search applied)' : ''}.`;
+      } else if (signals.length > 0) {
+        msg += ' No BUY signals in the current load — refresh signals or switch Live / All mode.';
+      }
       if (Array.isArray(data.meta?.warnings) && data.meta.warnings.length > 0) {
         msg += ` ${data.meta.warnings.join(' ')}`;
       }
@@ -351,10 +370,12 @@ export function RsiMaSetupCopyPanel() {
       setForceDailyBusy(false);
     }
   }, [
-    filteredSignals,
+    signals,
+    search,
     paperOrderValueInr,
     profitTargetPctInput,
     rsiRemainderExitInput,
+    partialExitQtyPercent,
     maxHoldingDays,
   ]);
 
@@ -370,6 +391,7 @@ export function RsiMaSetupCopyPanel() {
       const copyExitParams = {
         profitTargetPct: profitTargetPctInput,
         rsiRemainderExit: rsiRemainderExitInput,
+        partialTpFraction: partialExitQtyPercent,
       };
       if (backtestMode === 'all') {
         const data = await getRsiMaSetupCopyBacktestCombined({
@@ -409,11 +431,12 @@ export function RsiMaSetupCopyPanel() {
     backtestSeries,
     profitTargetPctInput,
     rsiRemainderExitInput,
+    partialExitQtyPercent,
     startListTransition,
   ]);
 
   const fetchBacktestDetailsIfNeeded = useCallback(async (symbol) => {
-    const cacheKey = `${symbol}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}`;
+    const cacheKey = `${symbol}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}\0${partialExitQtyPercent}`;
     if (!symbol || backtestDetailFetchedRef.current.has(cacheKey)) return;
     backtestDetailFetchedRef.current.add(cacheKey);
     setBacktestDetailLoading((l) => ({ ...l, [cacheKey]: true }));
@@ -424,6 +447,7 @@ export function RsiMaSetupCopyPanel() {
         series: backtestSeries,
         profitTargetPct: profitTargetPctInput,
         rsiRemainderExit: rsiRemainderExitInput,
+        partialTpFraction: partialExitQtyPercent,
       });
       startListTransition(() => setBacktestDetailCache((c) => ({ ...c, [cacheKey]: data })));
     } catch {
@@ -432,7 +456,7 @@ export function RsiMaSetupCopyPanel() {
     } finally {
       setBacktestDetailLoading((l) => ({ ...l, [cacheKey]: false }));
     }
-  }, [maxHoldingDays, backtestSeries, profitTargetPctInput, rsiRemainderExitInput, startListTransition]);
+  }, [maxHoldingDays, backtestSeries, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, startListTransition]);
 
   return (
     <PanelWithFullscreen panelClassName="rsi-ma-setup-copy-panel" title="RSI↓MA Setup (copy)">
@@ -566,6 +590,20 @@ export function RsiMaSetupCopyPanel() {
               style={{ width: 64, minWidth: 56 }}
             />
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span className="muted" style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }} title="Share of position sold at the first take-profit level">
+              Exit at 1st TP
+            </span>
+            <select
+              className="bot-live-input"
+              style={{ minWidth: 140 }}
+              value={partialExitQtyPercent}
+              onChange={(e) => setPartialExitQtyPercent(Number(e.target.value))}
+            >
+              <option value={80}>80% of qty</option>
+              <option value={100}>100% (full)</option>
+            </select>
+          </label>
           <button
             type="button"
             className="btn-secondary"
@@ -574,6 +612,7 @@ export function RsiMaSetupCopyPanel() {
             onClick={() => {
               setProfitTargetPctInput(RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT);
               setRsiRemainderExitInput(RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT);
+              setPartialExitQtyPercent(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
             }}
           >
             Reset defaults
@@ -581,7 +620,8 @@ export function RsiMaSetupCopyPanel() {
         </div>
         <p className="muted" style={{ margin: '10px 0 0', fontSize: '0.75rem', lineHeight: 1.4 }}>
           Used for backtests and for <strong>SL / partial TP / remainder RSI</strong> shown on the Signals tab (same rules as{' '}
-          <code>runBacktest</code> in <code>rsiMaSetupCopy.js</code>). Entry detection is unchanged.
+          <code>runBacktest</code> in <code>rsiMaSetupCopy.js</code>). <strong>100% at 1st TP</strong> exits the whole position at
+          the partial TP price (no remainder RSI leg). Entry detection is unchanged.
         </p>
       </div>
 
@@ -603,7 +643,11 @@ export function RsiMaSetupCopyPanel() {
             <Link to="/paper-trading">Paper trading</Link> (one open long per symbol). After entry, the server can run daily
             SL / partial TP / remainder RSI / max hold on the latest daily bar (11:59 AM Asia/Kolkata cron when DB is up; set{' '}
             <code>PAPER_TRADING_DAILY_BAR_EXITS=0</code> to disable). While a position is open, new BUYs for that symbol are
-            skipped.
+            skipped.{' '}
+            <strong>Scheduled cron</strong> (default) scans the same stored candles and auto-ticks every live daily BUY here
+            (set <code>PAPER_TRADING_RSI_MA_COPY_LIVE=0</code> to turn that off). Optional <code>PAPER_TRADING_AUTO</code>{' '}
+            rows merge in and override the same symbol. <strong>Run daily paper job</strong> below runs one immediate pipeline
+            using your loaded BUY list (up to 120) without waiting for cron.
           </p>
           <div className="dashboard-card-header-with-filters">
             <h3 className="dashboard-card-title" style={{ marginBottom: 0 }}>Signals (1D)</h3>
@@ -629,7 +673,7 @@ export function RsiMaSetupCopyPanel() {
                 type="button"
                 className="btn-secondary"
                 disabled={forceDailyBusy || loading}
-                title="Same as the scheduled daily pipeline: bar exits on all open paper positions, then PAPER_TRADING_AUTO ticks"
+                title="Bar exits on all open paper positions, then auto-ticks every loaded BUY signal here (up to 120), ignoring the BUY/HOLD table filter; search box still narrows symbols. If none sent, server uses PAPER_TRADING_AUTO env."
                 onClick={runForceDailyPaper}
               >
                 {forceDailyBusy ? 'Running…' : 'Run daily paper job'}
@@ -691,7 +735,9 @@ export function RsiMaSetupCopyPanel() {
                           <div>{signalCell(s.signal_type)}</div>
                           <div className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>
                             {s.entryPrice != null && <span style={{ marginRight: 8 }}>Entry: {Number(s.entryPrice).toFixed(2)}</span>}
-                            {s.firstDipBelow40Close != null && <span style={{ marginRight: 8 }}>First dip&lt;40: {Number(s.firstDipBelow40Close).toFixed(2)}</span>}
+                            {s.firstDipBelow40Close != null && (
+                              <span style={{ marginRight: 8 }}>Lowest dip&lt;40 low: {Number(s.firstDipBelow40Close).toFixed(2)}</span>
+                            )}
                             {s.entryTime && <span style={{ marginRight: 8 }}>Date: {formatTradeTime(s.entryTime)}</span>}
                             {s.signal_type === 'BUY' && s.stopLossPrice != null && (
                               <span style={{ marginRight: 8, display: 'inline-block' }}>
@@ -839,6 +885,13 @@ export function RsiMaSetupCopyPanel() {
               Bar unit: <strong>{backtestCombinedResult.barUnit ?? backtestCombinedResult.summary?.barUnit ?? 'day'}</strong>
               {' · '}Partial TP: <strong>{backtestCombinedResult.profitTargetPct != null ? `${(Number(backtestCombinedResult.profitTargetPct) * 100).toFixed(1)}%` : '—'}</strong>
               {' · '}Remainder RSI: <strong>{backtestCombinedResult.rsiRemainderExit ?? '—'}</strong>
+              {' · '}
+              1st TP exit:{' '}
+              <strong>
+                {backtestCombinedResult.partialTpFraction != null
+                  ? `${(Number(backtestCombinedResult.partialTpFraction) * 100).toFixed(0)}% qty`
+                  : '—'}
+              </strong>
               {' · '}RSI cross bar min price (strategy): <strong>{backtestCombinedResult.summary?.minStockPrice ?? '—'}</strong>
               {' · '}Symbols checked: <strong>{backtestCombinedResult.summary?.symbolsChecked ?? '—'}</strong>
               {' · '}Backtests run: <strong>{backtestCombinedResult.summary?.symbolsProcessed ?? '—'}</strong>
@@ -863,7 +916,7 @@ export function RsiMaSetupCopyPanel() {
                 <tbody>
                   {(backtestCombinedResult.results || []).map((r) => {
                     const sym = r.symbol;
-                    const cacheKey = `${sym}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}`;
+                    const cacheKey = `${sym}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}\0${partialExitQtyPercent}`;
                     const detail = backtestDetailCache[cacheKey];
                     const loading = backtestDetailLoading[cacheKey];
                     const monthlyRows =
@@ -953,6 +1006,13 @@ export function RsiMaSetupCopyPanel() {
                 {backtestResult.profitTargetPct != null ? `${(Number(backtestResult.profitTargetPct) * 100).toFixed(1)}%` : '—'}
               </strong>
               {' · '}Remainder RSI: <strong>{backtestResult.rsiRemainderExit ?? '—'}</strong>
+              {' · '}
+              1st TP exit:{' '}
+              <strong>
+                {backtestResult.partialTpFraction != null
+                  ? `${(Number(backtestResult.partialTpFraction) * 100).toFixed(0)}% qty`
+                  : '—'}
+              </strong>
             </p>
             <p className="muted" style={{ marginBottom: 8 }}>
               Trades: <strong>{backtestResult.tradesCount ?? 0}</strong>

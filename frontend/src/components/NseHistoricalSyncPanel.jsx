@@ -442,6 +442,36 @@ export function NseHistoricalSyncPanel() {
                   })}
                 </li>
               )}
+              {lastResult.syncWindow && (
+                <li style={{ marginTop: 8 }}>
+                  <span className="kpi-label" style={{ display: 'block', marginBottom: 4 }}>
+                    Sync window (this run)
+                  </span>
+                  {lastResult.syncWindow.skipped && (
+                    <div className="muted" style={{ fontSize: '0.8125rem' }}>
+                      Skipped: {lastResult.syncWindow.reason ?? '—'}
+                    </div>
+                  )}
+                  {lastResult.syncWindow.lastSyncCheckpoint && (
+                    <div className="muted" style={{ fontSize: '0.8125rem', marginTop: 4 }}>
+                      Last sync checkpoint (ISO):{' '}
+                      <br />
+                      day: {lastResult.syncWindow.lastSyncCheckpoint.day ?? '—'}
+                      <br />
+                      60m: {lastResult.syncWindow.lastSyncCheckpoint['60minute'] ?? '—'}
+                    </div>
+                  )}
+                  {lastResult.syncWindow.newStartKiteFrom && (
+                    <div className="muted" style={{ fontSize: '0.8125rem', marginTop: 4 }}>
+                      New Kite <code style={{ fontSize: '0.75rem' }}>from</code> (this run):{' '}
+                      <br />
+                      day: {lastResult.syncWindow.newStartKiteFrom.day ?? '—'}
+                      <br />
+                      60m: {lastResult.syncWindow.newStartKiteFrom['60minute'] ?? '—'}
+                    </div>
+                  )}
+                </li>
+              )}
             </ul>
           </div>
         )}

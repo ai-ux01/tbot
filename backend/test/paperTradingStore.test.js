@@ -49,3 +49,33 @@ test('PaperTradingStore partialCloseLong keeps avg entry and updates cash', () =
   assert.strictEqual(pos.paperRules.partialTpDone, true);
   assert.strictEqual(s.cash, 99_000 + 880);
 });
+
+test('PaperTradingStore hydrateFromPersistence restores positions and cash', () => {
+  const s = new PaperTradingStore();
+  s.initialCapital = 500_000;
+  s.reset();
+  s.hydrateFromPersistence({
+    initialCapital: 1_000_000,
+    cash: 750_000,
+    positions: [
+      {
+        id: 'pos-1',
+        setupId: 'rsi-setup',
+        symbol: 'ABC',
+        tradingsymbol: 'ABC',
+        qty: 5,
+        entryPrice: 200,
+        openedAt: '2026-01-01T00:00:00.000Z',
+        snapshot: { signal_type: 'BUY' },
+        orderValueInr: 1000,
+        paperRules: null,
+      },
+    ],
+  });
+  assert.strictEqual(s.initialCapital, 1_000_000);
+  assert.strictEqual(s.cash, 750_000);
+  const open = s.getOpen('rsi-setup', 'ABC');
+  assert.ok(open);
+  assert.strictEqual(open.qty, 5);
+  assert.strictEqual(open.entryPrice, 200);
+});
