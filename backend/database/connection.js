@@ -68,7 +68,7 @@ export async function disconnectDb() {
   }
 }
 
-/** @returns {boolean} */
+/** @returns {boolean} — uses mongoose readyState so checks stay accurate after reconnects. */
 export function isDbConnected() {
-  return isConnected && mongoose.connection.readyState === 1;
+  return mongoose.connection.readyState === 1;
 }

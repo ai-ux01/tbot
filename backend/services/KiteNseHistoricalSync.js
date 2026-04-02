@@ -9,20 +9,14 @@ import { getHistoricalCandles } from './kiteHistorical.js';
 import { Candle } from '../database/models/Candle.js';
 import { isDbConnected } from '../database/connection.js';
 import { logger } from '../logger.js';
+import { istStartOfCalendarDay, toDateStrIST } from '../utils/istExchangeDate.js';
 
-const DELAY_MS = 500;
+const DELAY_MS = 350;
 const YEARS_BACK = 5;
 const CHUNK_DAYS_60M = 60;
 
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function toDateStr(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
 }
 
 function toDateStrUTC(d) {
@@ -83,12 +77,12 @@ function isUpToDate(latestTime, now) {
 }
 
 /**
- * Build from/to strings for market hours (NSE 09:15–15:30).
+ * Build from/to strings for market hours (NSE 09:15–15:30). Date portion is IST calendar day.
  */
 function marketRange(fromDate, toDate, startTime = '09:15:00', endTime = '15:30:00') {
   return {
-    from: `${toDateStr(fromDate)} ${startTime}`,
-    to: `${toDateStr(toDate)} ${endTime}`,
+    from: `${toDateStrIST(fromDate)} ${startTime}`,
+    to: `${toDateStrIST(toDate)} ${endTime}`,
   };
 }
 
@@ -243,11 +237,11 @@ export async function syncNseEquityHistorical(session, options = {}) {
   const instruments = limit != null ? list.slice(0, limit) : list;
 
   const now = new Date();
-  const start = new Date(now);
+  const istTodayStart = istStartOfCalendarDay(now);
+  const start = new Date(istTodayStart);
   start.setFullYear(start.getFullYear() - YEARS_BACK);
 
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
+  const todayStart = istTodayStart;
 
   const fullDayRanges = [{ ...marketRange(start, now, '09:15:00', '15:30:00') }];
   const incrementalDayRanges = [{ ...marketRange(todayStart, now, '09:15:00', '15:30:00') }];

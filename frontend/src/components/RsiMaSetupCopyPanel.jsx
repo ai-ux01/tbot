@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useTransition } from 'react';
+import { Link } from 'react-router-dom';
 import {
   getRsiMaSetupCopyCombined,
   postRsiMaSetupCopyBacktest,
   getRsiMaSetupCopyBacktestCombined,
 } from '../api/signals';
+import { paperTick, paperForceDailyPipeline } from '../api/paperTrading';
 import {
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
@@ -185,21 +187,32 @@ export function RsiMaSetupCopyPanel() {
   const [lastUpdatedBySymbol, setLastUpdatedBySymbol] = useState({});
   const [listUiPending, startListTransition] = useTransition();
   const [mainTab, setMainTab] = useState('signals');
-  /** `all` = every symbol with BUY setups + HOLD rows; `live` = BUY only when the latest daily bar is the entry bar. */
-  const [signalsListMode, setSignalsListMode] = useState('all');
+  /** `all` = every symbol with BUY setups + HOLD rows; `live` = BUY only when the latest daily bar is the entry bar (default load). */
+  const [signalsListMode, setSignalsListMode] = useState('live');
   const [liveBuyCount, setLiveBuyCount] = useState(null);
   const [activeFetchMode, setActiveFetchMode] = useState(null);
+  const [paperOrderValueInr, setPaperOrderValueInr] = useState(10_000);
+  const [paperBusySymbol, setPaperBusySymbol] = useState(null);
+  const [paperActionError, setPaperActionError] = useState(null);
+  const [paperActionMessage, setPaperActionMessage] = useState(null);
+  const [forceDailyBusy, setForceDailyBusy] = useState(false);
 
   const fetchSignals = useCallback(
     async (explicitMode) => {
       const mode = explicitMode !== undefined ? explicitMode : signalsListMode;
       const liveOnly = mode === 'live';
       setError(null);
+      setPaperActionError(null);
+      setPaperActionMessage(null);
       setLoading(true);
       setActiveFetchMode(mode);
       try {
         const [data, lastUpdatedRes] = await Promise.all([
-          getRsiMaSetupCopyCombined(liveOnly ? { liveOnly: true } : {}),
+          getRsiMaSetupCopyCombined({
+            ...(liveOnly ? { liveOnly: true } : {}),
+            profitTargetPct: profitTargetPctInput,
+            rsiRemainderExit: rsiRemainderExitInput,
+          }),
           getStoredCandlesLastUpdated().catch(() => ({ items: [] })),
         ]);
         const map = {};
@@ -226,7 +239,66 @@ export function RsiMaSetupCopyPanel() {
         setLoading(false);
       }
     },
-    [signalsListMode, startListTransition],
+    [signalsListMode, startListTransition, profitTargetPctInput, rsiRemainderExitInput],
+  );
+
+  const placePaperBuyFromRow = useCallback(
+    async (s) => {
+      const sym = String(s.instrument || s.tradingsymbol || '').trim();
+      if (!sym || s.signal_type !== 'BUY') return;
+      setPaperActionError(null);
+      setPaperActionMessage(null);
+      setError(null);
+      setPaperBusySymbol(sym);
+      try {
+        const data = await paperTick({
+          setupId: 'rsi-ma-setup-copy',
+          symbol: sym,
+          orderValueInr: paperOrderValueInr,
+          series: 'day',
+          profitTargetPct: profitTargetPctInput,
+          rsiRemainderExit: rsiRemainderExitInput,
+          maxHoldingDays,
+        });
+        if (!data.ok) {
+          setPaperActionError(data.error || data.reason || 'Paper order failed');
+          return;
+        }
+        if (data.action === 'OPEN' && data.position) {
+          const q = data.position.qty;
+          const px = data.position.entryPrice;
+          setPaperActionMessage(
+            `Paper long opened: ${sym} — ${q} @ ${px != null ? Number(px).toFixed(2) : '—'} (setup re-checked on latest daily bar).`,
+          );
+        } else if (data.action === 'NONE') {
+          const st = data.snapshot?.signal_type ?? '—';
+          setPaperActionMessage(
+            `No new position: latest bar evaluates ${st} for ${sym} (open only when evaluate() is BUY).`,
+          );
+        } else if (data.action === 'SKIP') {
+          setPaperActionError(data.reason || data.error || 'Skipped');
+        } else if (data.action === 'CLOSE') {
+          const r = data.trade?.exitReason ?? data.snapshot?.signal_type;
+          const pnl = data.trade?.realizedPnl;
+          setPaperActionMessage(
+            `Paper position closed for ${sym}${r ? ` (${r})` : ''}${
+              pnl != null && Number.isFinite(Number(pnl)) ? ` · PnL ${Number(pnl).toFixed(2)}` : ''
+            }.`,
+          );
+        } else if (data.action === 'PARTIAL') {
+          setPaperActionMessage(
+            `Paper partial TP ${sym}: sold ${data.soldQty ?? '—'} @ ${data.price != null ? Number(data.price).toFixed(2) : '—'}.`,
+          );
+        } else {
+          setPaperActionMessage(data.action ? `Paper: ${data.action}` : 'Paper tick done.');
+        }
+      } catch (e) {
+        setPaperActionError(e?.message ?? 'Paper order failed');
+      } finally {
+        setPaperBusySymbol(null);
+      }
+    },
+    [paperOrderValueInr, profitTargetPctInput, rsiRemainderExitInput, maxHoldingDays],
   );
 
   useEffect(() => {
@@ -243,6 +315,48 @@ export function RsiMaSetupCopyPanel() {
       return matchType && matchSearch;
     });
   }, [signals, search, signalTypeFilter]);
+
+  const runForceDailyPaper = useCallback(async () => {
+    setForceDailyBusy(true);
+    setPaperActionError(null);
+    setPaperActionMessage(null);
+    try {
+      const buyRows = filteredSignals
+        .filter((s) => s.signal_type === 'BUY')
+        .slice(0, 120)
+        .map((s) => ({
+          setupId: 'rsi-ma-setup-copy',
+          symbol: String(s.instrument || s.tradingsymbol || '').trim(),
+          orderValueInr: paperOrderValueInr,
+          series: 'day',
+          profitTargetPct: profitTargetPctInput,
+          rsiRemainderExit: rsiRemainderExitInput,
+          maxHoldingDays,
+        }))
+        .filter((r) => r.symbol);
+
+      const data = await paperForceDailyPipeline(buyRows.length > 0 ? { rows: buyRows } : {});
+      const n = Array.isArray(data.auto) ? data.auto.length : 0;
+      const ex = data.exits?.processed ?? 0;
+      const src = data.meta?.source === 'request_body' ? 'this table (BUY rows)' : 'server env PAPER_TRADING_AUTO';
+      let msg = `Daily paper job: ${ex} open position(s) checked for exits, ${n} auto-tick run(s) (${src}).`;
+      if (buyRows.length > 0) msg += ` Sent ${buyRows.length} BUY row(s) from the filtered list.`;
+      if (Array.isArray(data.meta?.warnings) && data.meta.warnings.length > 0) {
+        msg += ` ${data.meta.warnings.join(' ')}`;
+      }
+      setPaperActionMessage(msg);
+    } catch (e) {
+      setPaperActionError(e?.message ?? 'Daily paper job failed');
+    } finally {
+      setForceDailyBusy(false);
+    }
+  }, [
+    filteredSignals,
+    paperOrderValueInr,
+    profitTargetPctInput,
+    rsiRemainderExitInput,
+    maxHoldingDays,
+  ]);
 
   const runBacktest = useCallback(async () => {
     setBacktestError(null);
@@ -410,7 +524,7 @@ export function RsiMaSetupCopyPanel() {
             <span
               className="muted"
               style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}
-              title={`Half position scales out at this % gain vs avg cost (default RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT = ${RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT}%).`}
+              title={`Partial exit scales out at this % gain vs avg cost (default ${RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT}%).`}
             >
               Partial TP %
             </span>
@@ -431,7 +545,7 @@ export function RsiMaSetupCopyPanel() {
             />
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span className="muted" style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }} title="Exit remaining half when bar RSI ≥ this">
+            <span className="muted" style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }} title="Exit remaining position when bar RSI ≥ this">
               Remainder RSI
             </span>
             <input
@@ -466,7 +580,8 @@ export function RsiMaSetupCopyPanel() {
           </button>
         </div>
         <p className="muted" style={{ margin: '10px 0 0', fontSize: '0.75rem', lineHeight: 1.4 }}>
-          Used when you run a backtest on the Backtest tab. Signals (1D) entry logic is unchanged.
+          Used for backtests and for <strong>SL / partial TP / remainder RSI</strong> shown on the Signals tab (same rules as{' '}
+          <code>runBacktest</code> in <code>rsiMaSetupCopy.js</code>). Entry detection is unchanged.
         </p>
       </div>
 
@@ -483,11 +598,42 @@ export function RsiMaSetupCopyPanel() {
                 Daily swing setup: 1D evaluation per symbol from stored candles (all qualifying setups + HOLD per symbol).
                 Sync from NSE Historical Sync, then use Refresh all or Live (last bar) when you want an update—no auto-poll.
               </>
-            )}
+            )}{' '}
+            <strong>Paper buy</strong> uses the same <code>rsi-ma-setup-copy</code> rules as{' '}
+            <Link to="/paper-trading">Paper trading</Link> (one open long per symbol). After entry, the server can run daily
+            SL / partial TP / remainder RSI / max hold on the latest daily bar (11:59 AM Asia/Kolkata cron when DB is up; set{' '}
+            <code>PAPER_TRADING_DAILY_BAR_EXITS=0</code> to disable). While a position is open, new BUYs for that symbol are
+            skipped.
           </p>
           <div className="dashboard-card-header-with-filters">
             <h3 className="dashboard-card-title" style={{ marginBottom: 0 }}>Signals (1D)</h3>
-            <div className="dashboard-toolbar" style={{ marginBottom: 0, flexWrap: 'wrap', gap: 8 }}>
+            <div className="dashboard-toolbar" style={{ marginBottom: 0, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span className="muted" style={{ fontSize: '0.8rem', whiteSpace: 'nowrap' }} title="Notional per paper BUY (qty = floor(value ÷ last close))">
+                  Paper ₹
+                </span>
+                <input
+                  type="number"
+                  min={1000}
+                  step={1000}
+                  value={paperOrderValueInr}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setPaperOrderValueInr(Number.isFinite(v) && v >= 1000 ? Math.floor(v) : 10_000);
+                  }}
+                  className="bot-live-input"
+                  style={{ width: 100 }}
+                />
+              </label>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={forceDailyBusy || loading}
+                title="Same as the scheduled daily pipeline: bar exits on all open paper positions, then PAPER_TRADING_AUTO ticks"
+                onClick={runForceDailyPaper}
+              >
+                {forceDailyBusy ? 'Running…' : 'Run daily paper job'}
+              </button>
               <input
                 type="text"
                 placeholder="Search instrument…"
@@ -547,8 +693,45 @@ export function RsiMaSetupCopyPanel() {
                             {s.entryPrice != null && <span style={{ marginRight: 8 }}>Entry: {Number(s.entryPrice).toFixed(2)}</span>}
                             {s.firstDipBelow40Close != null && <span style={{ marginRight: 8 }}>First dip&lt;40: {Number(s.firstDipBelow40Close).toFixed(2)}</span>}
                             {s.entryTime && <span style={{ marginRight: 8 }}>Date: {formatTradeTime(s.entryTime)}</span>}
+                            {s.signal_type === 'BUY' && s.stopLossPrice != null && (
+                              <span style={{ marginRight: 8, display: 'inline-block' }}>
+                                <span className="signals-stacked-label">SL:</span> {Number(s.stopLossPrice).toFixed(2)}
+                                {s.stopLossPct != null && <span> (−{Number(s.stopLossPct).toFixed(2)}%)</span>}
+                              </span>
+                            )}
+                            {s.signal_type === 'BUY' && s.partialTakeProfitPrice != null && (
+                              <span style={{ marginRight: 8, display: 'inline-block' }}>
+                                <span className="signals-stacked-label">Partial TP:</span> {Number(s.partialTakeProfitPrice).toFixed(2)}
+                                {s.partialTakeProfitPct != null && (
+                                  <span>
+                                    {' '}
+                                    (+{Number(s.partialTakeProfitPct).toFixed(2)}%
+                                    {s.partialTpFraction != null ? `, ${(Number(s.partialTpFraction) * 100).toFixed(0)}% qty` : ''})
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                            {s.signal_type === 'BUY' && s.rsiRemainderExit != null && (
+                              <span style={{ marginRight: 8, display: 'inline-block' }}>
+                                <span className="signals-stacked-label">Remainder:</span> RSI ≥ {s.rsiRemainderExit}
+                              </span>
+                            )}
                             <span className="signals-stacked-label">Updated:</span> {formatTime(s.createdAt)}
                           </div>
+                          {s.signal_type === 'BUY' && (
+                            <button
+                              type="button"
+                              className="btn-secondary"
+                              style={{ fontSize: '0.75rem', marginTop: 8, padding: '5px 10px' }}
+                              disabled={paperBusySymbol != null}
+                              onClick={() => placePaperBuyFromRow(s)}
+                              title="Virtual BUY: re-evaluates copy setup on latest daily bar; opens long if BUY and no open position for this symbol."
+                            >
+                              {paperBusySymbol === String(s.instrument || s.tradingsymbol || '').trim()
+                                ? 'Placing…'
+                                : 'Paper buy'}
+                            </button>
+                          )}
                         </div>
                       </td>
                       <td style={{ verticalAlign: 'top', whiteSpace: 'nowrap' }}>
@@ -569,6 +752,12 @@ export function RsiMaSetupCopyPanel() {
             {signalsListMode === 'live' && liveBuyCount != null ? ` · ${liveBuyCount} live daily BUY` : ''}. Strategy logic in{' '}
             <code>rsiMaSetupCopy.js</code>.
           </p>
+          {paperActionMessage && (
+            <p className="muted" style={{ marginTop: 8, marginBottom: 0, fontSize: '0.85rem' }}>{paperActionMessage}</p>
+          )}
+          {paperActionError && (
+            <p className="bot-live-error" style={{ marginTop: 8, marginBottom: 0 }}>{paperActionError}</p>
+          )}
           {error && <p className="bot-live-error" style={{ marginTop: 8 }}>{error}</p>}
         </>
       )}

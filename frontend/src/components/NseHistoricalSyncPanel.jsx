@@ -305,6 +305,7 @@ export function NseHistoricalSyncPanel() {
         <h2 className="dashboard-card-title">NSE Historical Sync</h2>
         <p className="dashboard-card-subtitle">
           List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock or run batch sync. Sync continues in the background if you leave this page.
+          For a complete same-day daily bar, run after NSE close (~3:30 PM IST). Server uses IST calendar for incremental ranges.
         </p>
 
         <div className="kpi-grid">
@@ -423,6 +424,24 @@ export function NseHistoricalSyncPanel() {
             <ul className="muted" style={{ margin: 0, paddingLeft: 20, fontSize: '0.875rem' }}>
               <li>Day candles: {lastResult.candlesDay ?? 0}</li>
               <li>60m candles: {lastResult.candles60m ?? 0}</li>
+              {lastResult.durationMs != null && Number.isFinite(lastResult.durationMs) && (
+                <li>
+                  Duration:{' '}
+                  {lastResult.durationMs < 1000
+                    ? `${Math.round(lastResult.durationMs)} ms`
+                    : `${(lastResult.durationMs / 1000).toFixed(1)} s`}
+                </li>
+              )}
+              {lastResult.completedAt && (
+                <li>
+                  Finished (IST):{' '}
+                  {new Date(lastResult.completedAt).toLocaleString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    dateStyle: 'medium',
+                    timeStyle: 'medium',
+                  })}
+                </li>
+              )}
             </ul>
           </div>
         )}

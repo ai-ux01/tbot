@@ -27,6 +27,7 @@ import {
   RSI_PRECONDITION_LEVEL as RSI_MA_COPY_RSI_PRECONDITION,
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
+  planRsiMaCopyTradeLevels,
 } from '../services/rsiMaSetupCopy.js';
 import { aggregateDailyToMonthly, normalizeBacktestSeries } from '../services/candleAggregate.js';
 import { aggregateTradesByExitMonth } from '../services/backtestMonthlyBreakdown.js';
@@ -242,8 +243,29 @@ async function evaluateEightyPercentForSymbol(symbol, tradingsymbol, timeframe) 
   return rows;
 }
 
+/** Optional `profitTargetPct` / `rsiRemainderExit` query params — same interpretation as copy backtest. */
+function parseRsiMaCopyExitQuery(query) {
+  const out = {};
+  if (query?.profitTargetPct != null && String(query.profitTargetPct).trim() !== '') {
+    const v = Number(query.profitTargetPct);
+    if (Number.isFinite(v) && v > 0) out.profitTargetPct = v;
+  }
+  if (query?.rsiRemainderExit != null && String(query.rsiRemainderExit).trim() !== '') {
+    const v = Number(query.rsiRemainderExit);
+    if (Number.isFinite(v)) out.rsiRemainderExit = v;
+  }
+  return out;
+}
+
+function attachRsiMaCopyTradeLevels(row, entryPrice, exitOpts) {
+  if (!row || row.signal_type !== 'BUY' || entryPrice == null || !Number.isFinite(Number(entryPrice))) return row;
+  const levels = planRsiMaCopyTradeLevels(entryPrice, exitOpts);
+  if (!levels) return row;
+  return { ...row, ...levels };
+}
+
 /** RSI↓MA Setup (copy): same row shape as primary; uses `rsiMaSetupCopy.js` for independent tuning. */
-async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe) {
+async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe, exitOpts = {}) {
   const candles = await getCandlesForSignal(symbol, timeframe, 500);
   if (candles.length < 30) return null;
   const ohlcv = candles.map((c) => ({
@@ -264,21 +286,27 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe)
       const entryTime = candles[s.entryIndex]?.time ?? null;
       const explanation = `RSI↓MA Setup (copy): RSI dipped below ${RSI_MA_COPY_RSI_PRECONDITION}, rose above ${RSI_MA_COPY_RSI_ARM}, then crossed down through RSI MA; entry is first dip-below-${RSI_MA_COPY_RSI_PRECONDITION} close ${Number(s.entryPrice).toFixed(2)}.`;
       const psl = s.previousSwingLow ?? s.entryPrice;
-      rows.push({
-        instrument: symbol,
-        tradingsymbol: tradingsymbol || symbol,
-        signal_type: 'BUY',
-        confidence: 0.8,
-        explanation,
-        entryPrice: s.entryPrice,
-        firstDipBelow40Close: s.firstDipBelow40Close ?? s.entryPrice ?? null,
-        previousSwingLow: psl,
-        entryTime,
-        confidenceScore: 80,
-        confidenceLabel: 'RSI↓MA copy',
-        rsi: rsiValue,
-        createdAt: now,
-      });
+      rows.push(
+        attachRsiMaCopyTradeLevels(
+          {
+            instrument: symbol,
+            tradingsymbol: tradingsymbol || symbol,
+            signal_type: 'BUY',
+            confidence: 0.8,
+            explanation,
+            entryPrice: s.entryPrice,
+            firstDipBelow40Close: s.firstDipBelow40Close ?? s.entryPrice ?? null,
+            previousSwingLow: psl,
+            entryTime,
+            confidenceScore: 80,
+            confidenceLabel: 'RSI↓MA copy',
+            rsi: rsiValue,
+            createdAt: now,
+          },
+          s.entryPrice,
+          exitOpts,
+        ),
+      );
     }
   } else {
     rows.push({
@@ -300,7 +328,7 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe)
 }
 
 /** BUY on latest daily bar only (same as `evaluate()` in rsiMaSetupCopy.js), for scan-all live list. */
-async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol) {
+async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOpts = {}) {
   const candles = await getCandlesForSignal(symbol, 'day', 500);
   if (candles.length < 30) return null;
   const ohlcv = candles.map((c) => ({
@@ -319,22 +347,26 @@ async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol) {
   const entryTime = candles[i]?.time ?? null;
   const entry = result.entryPrice;
   const now = new Date();
-  return {
-    instrument: symbol,
-    tradingsymbol: tradingsymbol || symbol,
-    signal_type: 'BUY',
-    confidence: 0.8,
-    explanation: result.explanation,
-    entryPrice: entry,
-    firstDipBelow40Close: result.firstDipBelow40Close ?? entry ?? null,
-    previousSwingLow: result.previousSwingLow ?? entry ?? null,
-    entryTime,
-    confidenceScore: 80,
-    confidenceLabel: 'RSI↓MA copy · live daily',
-    liveDailyBar: true,
-    rsi: rsiValue,
-    createdAt: now,
-  };
+  return attachRsiMaCopyTradeLevels(
+    {
+      instrument: symbol,
+      tradingsymbol: tradingsymbol || symbol,
+      signal_type: 'BUY',
+      confidence: 0.8,
+      explanation: result.explanation,
+      entryPrice: entry,
+      firstDipBelow40Close: result.firstDipBelow40Close ?? entry ?? null,
+      previousSwingLow: result.previousSwingLow ?? entry ?? null,
+      entryTime,
+      confidenceScore: 80,
+      confidenceLabel: 'RSI↓MA copy · live daily',
+      liveDailyBar: true,
+      rsi: rsiValue,
+      createdAt: now,
+    },
+    entry,
+    exitOpts,
+  );
 }
 
 import { trainModel } from '../services/PatternService.js';
@@ -716,16 +748,17 @@ router.get('/rsi-ma-setup-copy/combined', async (req, res) => {
     const limit = Number.isFinite(reqLimit) && reqLimit > 0 ? Math.min(5000, reqLimit) : symbols.length;
     const liveOnly =
       req.query.liveOnly === 'true' || req.query.liveOnly === '1' || req.query.liveOnly === 1;
+    const exitOpts = parseRsiMaCopyExitQuery(req.query);
     const combined = [];
     for (let i = 0; i < Math.min(symbols.length, limit); i++) {
       const { symbol: sym, tradingsymbol: ts } = symbols[i];
       if (!sym && !ts) continue;
       try {
         if (liveOnly) {
-          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts);
+          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts, exitOpts);
           if (row) combined.push(row);
         } else {
-          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day');
+          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day', exitOpts);
           if (!rows || rows.length === 0) continue;
           combined.push(...rows);
         }

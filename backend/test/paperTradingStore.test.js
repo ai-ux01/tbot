@@ -26,3 +26,26 @@ test('PaperTradingStore open and close updates cash and PnL', () => {
   assert.ok(c.trade.exitSnapshot);
   assert.strictEqual(s.cash, 100_000 + 100);
 });
+
+test('PaperTradingStore partialCloseLong keeps avg entry and updates cash', () => {
+  const s = new PaperTradingStore();
+  s.initialCapital = 100_000;
+  s.reset();
+  s.openLong({
+    setupId: 'rsi-ma-setup-copy',
+    symbol: 'T',
+    tradingsymbol: 'T',
+    qty: 10,
+    price: 100,
+    snapshot: null,
+    paperRules: { kind: 'rsi-ma-setup-copy', partialTpDone: false },
+  });
+  assert.strictEqual(s.cash, 100_000 - 1000);
+  const p = s.partialCloseLong('rsi-ma-setup-copy', 'T', 8, 110);
+  assert.ok(p.success);
+  const pos = s.getOpen('rsi-ma-setup-copy', 'T');
+  assert.strictEqual(pos.qty, 2);
+  assert.strictEqual(pos.entryPrice, 100);
+  assert.strictEqual(pos.paperRules.partialTpDone, true);
+  assert.strictEqual(s.cash, 99_000 + 880);
+});

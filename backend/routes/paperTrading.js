@@ -11,24 +11,60 @@ import {
   closePaperPositionAtMarket,
   getPaperTradingState,
   resetPaperTrading,
+  runPaperTradingAutoTicks,
+  runPaperTradingDailyBarExits,
 } from '../services/PaperTradingService.js';
 import { paperTradingStore } from '../services/PaperTradingStore.js';
 import { logger } from '../logger.js';
 import { listPaperTrades, summarizePaperTradesByMonth } from '../services/paperTradePersistence.js';
+import { getPaperTradingSchedulerStatus } from '../services/PaperTradingSchedulerService.js';
+import { enrichPaperTradingState } from '../services/paperPositionEnrich.js';
 
 const router = Router();
+
+/** Attach `instrumentName` on positions when Mongo candles map token → tradingsymbol. */
+async function sendJsonWithEnrichedState(res, payload) {
+  if (payload && typeof payload === 'object' && payload.state != null && isDbConnected()) {
+    try {
+      const state = await enrichPaperTradingState(payload.state);
+      return res.json({ ...payload, state });
+    } catch {
+      /* fall through */
+    }
+  }
+  return res.json(payload);
+}
 
 router.get('/setups', (_req, res) => {
   res.json({ setups: PAPER_TRADING_SETUPS });
 });
 
-router.get('/state', (_req, res) => {
-  res.json(getPaperTradingState());
+router.get('/schedule-status', (_req, res) => {
+  res.json(getPaperTradingSchedulerStatus());
 });
 
-router.post('/reset', (_req, res) => {
+router.get('/state', async (_req, res) => {
+  try {
+    const state = getPaperTradingState();
+    if (!isDbConnected()) {
+      return res.json(state);
+    }
+    const enriched = await enrichPaperTradingState(state);
+    res.json(enriched);
+  } catch (err) {
+    logger.error('Paper state enrich failed', { error: err?.message });
+    res.json(getPaperTradingState());
+  }
+});
+
+router.post('/reset', async (_req, res) => {
   const state = resetPaperTrading();
-  res.json(state);
+  if (!isDbConnected()) return res.json(state);
+  try {
+    return res.json(await enrichPaperTradingState(state));
+  } catch {
+    return res.json(state);
+  }
 });
 
 router.post('/preview', async (req, res) => {
@@ -55,6 +91,74 @@ router.post('/preview', async (req, res) => {
   }
 });
 
+/**
+ * POST /auto-tick — run the same batch as the daily cron (PAPER_TRADING_AUTO).
+ * Requires DB; uses env config, not request body.
+ */
+router.post('/auto-tick', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const { runPaperTradingDailyPipeline } = await import('../services/PaperTradingSchedulerService.js');
+    const data = await runPaperTradingDailyPipeline({ rows: req.body?.rows });
+    res.json({ ok: true, ...data });
+  } catch (err) {
+    logger.error('Paper auto-tick failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Auto tick failed' });
+  }
+});
+
+/**
+ * POST /tick-batch — run applyPaperTick for each object in body.rows (manual alternative to env).
+ */
+router.post('/tick-batch', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const results = await runPaperTradingAutoTicks(paperTradingStore, rows);
+    res.json({ ok: true, results });
+  } catch (err) {
+    logger.error('Paper tick-batch failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Tick batch failed' });
+  }
+});
+
+/**
+ * POST /run-daily-bar-exits — SL / partial TP / RSI / max hold for all open positions (same logic as daily cron).
+ */
+router.post('/run-daily-bar-exits', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const data = await runPaperTradingDailyBarExits(paperTradingStore);
+    res.json(data);
+  } catch (err) {
+    logger.error('Paper run-daily-bar-exits failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Run failed' });
+  }
+});
+
+/**
+ * POST /run-daily-pipeline — bar exits then optional auto ticks (mirrors scheduled job).
+ */
+router.post('/run-daily-pipeline', async (req, res) => {
+  if (!isDbConnected()) {
+    return res.status(503).json({ error: 'Database not connected' });
+  }
+  try {
+    const { runPaperTradingDailyPipeline } = await import('../services/PaperTradingSchedulerService.js');
+    const data = await runPaperTradingDailyPipeline({ rows: req.body?.rows });
+    res.json(data);
+  } catch (err) {
+    logger.error('Paper run-daily-pipeline failed', { error: err?.message });
+    res.status(500).json({ error: err?.message ?? 'Run failed' });
+  }
+});
+
 router.post('/tick', async (req, res) => {
   if (!isDbConnected()) {
     return res.status(503).json({ error: 'Database not connected' });
@@ -68,9 +172,12 @@ router.post('/tick', async (req, res) => {
       mode: req.body?.mode,
       thresholds: req.body?.thresholds,
       series: req.body?.series,
+      profitTargetPct: req.body?.profitTargetPct,
+      rsiRemainderExit: req.body?.rsiRemainderExit,
+      maxHoldingDays: req.body?.maxHoldingDays,
     };
     const out = await applyPaperTick(paperTradingStore, setupId, symbol, orderValueInr, opts);
-    res.json(out);
+    return sendJsonWithEnrichedState(res, out);
   } catch (err) {
     logger.error('Paper tick failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'Tick failed' });
@@ -94,7 +201,7 @@ router.post('/close', async (req, res) => {
     if (!out.ok) {
       return res.status(400).json(out);
     }
-    res.json(out);
+    return sendJsonWithEnrichedState(res, out);
   } catch (err) {
     logger.error('Paper close failed', { error: err?.message });
     res.status(500).json({ error: err?.message ?? 'Close failed' });

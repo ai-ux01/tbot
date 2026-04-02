@@ -623,11 +623,15 @@ router.post('/sync-nse-historical', requireKiteSession, async (req, res) => {
     if (req.body?.limit != null) opts.limit = req.body.limit;
     if (req.body?.instrument_token != null) opts.instrument_token = req.body.instrument_token;
     if (req.body?.tradingsymbol != null) opts.tradingsymbol = req.body.tradingsymbol;
+    const t0 = Date.now();
     const result = await syncNseEquityHistorical(session, opts);
-    logger.info('KiteNseHistoricalSync done', result);
+    const durationMs = Date.now() - t0;
+    logger.info('KiteNseHistoricalSync done', { ...result, durationMs });
     res.json({
       ok: true,
       message: 'NSE equity historical sync (1h + 1d, last 5 years) completed',
+      durationMs,
+      completedAt: new Date().toISOString(),
       ...result,
     });
   } catch (err) {

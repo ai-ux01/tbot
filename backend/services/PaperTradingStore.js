@@ -37,7 +37,7 @@ export class PaperTradingStore {
   /**
    * @returns {{ success: boolean, position?: object, error?: string }}
    */
-  openLong({ setupId, symbol, tradingsymbol, qty, price, snapshot, orderValueInr }) {
+  openLong({ setupId, symbol, tradingsymbol, qty, price, snapshot, orderValueInr, paperRules = null }) {
     const key = this.positionKey(setupId, symbol);
     if (this.positions.has(key)) {
       return { success: false, error: 'Already have an open paper position for this setup and symbol.' };
@@ -63,9 +63,39 @@ export class PaperTradingStore {
       snapshot: snapshot || null,
       orderValueInr:
         orderValueInr != null && Number.isFinite(Number(orderValueInr)) ? Number(orderValueInr) : null,
+      paperRules: paperRules && typeof paperRules === 'object' ? { ...paperRules } : null,
     };
     this.positions.set(key, position);
     return { success: true, position };
+  }
+
+  /**
+   * Partial take-profit: sell `sellQty` at `price`, keep remainder at same average entry.
+   * @returns {{ success: boolean, position?: object, error?: string, soldQty?: number }}
+   */
+  partialCloseLong(setupId, symbol, sellQty, price) {
+    const key = this.positionKey(setupId, symbol);
+    const pos = this.positions.get(key);
+    if (!pos) {
+      return { success: false, error: 'No open paper position for this setup and symbol.' };
+    }
+    const sq = Math.floor(Number(sellQty));
+    const px = Number(price);
+    const avg = Number(pos.entryPrice);
+    const q = Math.floor(Number(pos.qty));
+    if (!Number.isFinite(sq) || sq < 1 || sq >= q) {
+      return { success: false, error: 'Invalid partial quantity.' };
+    }
+    if (!Number.isFinite(px) || px <= 0 || !Number.isFinite(avg) || avg <= 0) {
+      return { success: false, error: 'Invalid price.' };
+    }
+    const proceeds = sq * px;
+    this.cash += proceeds;
+    pos.qty = q - sq;
+    if (pos.paperRules && typeof pos.paperRules === 'object') {
+      pos.paperRules.partialTpDone = true;
+    }
+    return { success: true, position: pos, soldQty: sq };
   }
 
   /**

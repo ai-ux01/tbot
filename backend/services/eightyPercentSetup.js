@@ -279,10 +279,50 @@ export function runBacktest(ohlcv, options = {}) {
   };
 }
 
+/**
+ * One-bar exit for paper trading (matches `runBacktest` order: TP before SL, then max hold).
+ * @param {number} entryPrice
+ * @param {{ high?: number, low?: number, close?: number }} bar
+ * @param {number} barsHeld - 0 on entry bar → no exit
+ * @param {{ maxHoldingDays?: number }} [options]
+ */
+export function resolveEightyPercentPaperBarAction(entryPrice, bar, barsHeld, options = {}) {
+  const ep = Number(entryPrice);
+  if (!Number.isFinite(ep) || ep <= 0) return { action: 'none' };
+  if (barsHeld < 1) return { action: 'none' };
+
+  const maxHoldingDays =
+    options?.maxHoldingDays != null &&
+    Number.isFinite(Number(options.maxHoldingDays)) &&
+    Number(options.maxHoldingDays) >= 1
+      ? Math.floor(Number(options.maxHoldingDays))
+      : MAX_HOLDING_DAYS;
+
+  const hi = bar?.high != null ? Number(bar.high) : NaN;
+  const lo = bar?.low != null ? Number(bar.low) : NaN;
+  const cl = bar?.close != null ? Number(bar.close) : NaN;
+  if (!Number.isFinite(cl)) return { action: 'none' };
+
+  const stopPrice = ep * (1 - STOP_LOSS_PCT);
+  const targetPrice = ep * (1 + PROFIT_TARGET_PCT);
+
+  if (Number.isFinite(hi) && hi >= targetPrice) {
+    return { action: 'close', price: targetPrice, reason: 'profit_target_pct' };
+  }
+  if (Number.isFinite(lo) && lo <= stopPrice) {
+    return { action: 'close', price: stopPrice, reason: 'stop_loss_pct' };
+  }
+  if (barsHeld >= maxHoldingDays) {
+    return { action: 'close', price: cl, reason: `max_holding_${maxHoldingDays}d` };
+  }
+  return { action: 'none' };
+}
+
 export default {
   evaluate,
   evaluateAllSetups,
   runBacktest,
+  resolveEightyPercentPaperBarAction,
   MIN_STOCK_PRICE,
   RSI_ARM_LEVEL,
   RSI_PRECONDITION_LEVEL,

@@ -270,7 +270,7 @@ export async function pushStoredCandles(candles) {
  * POST /api/kite/sync-nse-historical
  * Syncs NSE equity 1h + 1d for last 5 years to DB.
  * Body: { limit?: number, instrument_token?: string, tradingsymbol?: string }
- * Returns { ok, instruments, candlesDay, candles60m, errors }
+ * Returns { ok, durationMs, completedAt (ISO), instruments, candlesDay, candles60m, errors }
  */
 export async function syncNseHistorical(options = {}) {
   const url = getKiteBaseUrl() + '/api/kite/sync-nse-historical';

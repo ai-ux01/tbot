@@ -83,8 +83,14 @@ async function start() {
       process.exit(1);
     }
   }
-  server.listen(config.port, () => {
+  server.listen(config.port, async () => {
     logger.info('Backend listening', { port: config.port, url: `http://localhost:${config.port}` });
+    try {
+      const { startPaperTradingScheduler } = await import('./services/PaperTradingSchedulerService.js');
+      startPaperTradingScheduler();
+    } catch (err) {
+      logger.warn('Paper trading scheduler not started', { error: err?.message });
+    }
   });
 }
 
@@ -106,6 +112,11 @@ async function shutdown(signal) {
     if (typeof stopScheduler === 'function') {
       stopScheduler();
       logger.info('Swing scheduler stopped');
+    }
+    const { stopPaperTradingScheduler } = await import('./services/PaperTradingSchedulerService.js');
+    if (typeof stopPaperTradingScheduler === 'function') {
+      stopPaperTradingScheduler();
+      logger.info('Paper trading scheduler stopped');
     }
     await disconnectDb().catch(() => {});
     io.close(() => logger.info('Socket.IO closed'));

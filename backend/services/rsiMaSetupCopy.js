@@ -18,14 +18,14 @@ const DEFAULT_BUY_AMOUNT = 1000;
 const STOP_LOSS_PCT = 0.05;
 /** Stop vs average cost once max pyramid adds are used (no further adds). Often tighter than `STOP_LOSS_PCT`. */
 const STOP_LOSS_AFTER_MAX_PYRAMID_PCT = 0.03;
-/** Default fraction for first partial take-profit (e.g. 0.7 = +70% vs avg cost). Overridable via `runBacktest` options. */
+/** Default fraction for first partial take-profit vs avg cost (e.g. 0.10 = +10%). Overridable via `runBacktest` options. */
 export const RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT = 0.10;
 /** Default RSI level (close-of-bar) to exit the remainder after partial TP. Overridable via `runBacktest` options. */
 export const RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT = 70;
 const PROFIT_TARGET_PCT = RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT;
 const RSI_REMAINDER_EXIT = RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT;
-/** Fraction of shares sold at the +70% profit target; remainder follows `RSI_REMAINDER_EXIT`. */
-const PARTIAL_TP_FRACTION = 0.5;
+/** Fraction of position sold at partial TP; remainder follows `RSI_REMAINDER_EXIT` / stop / max hold. */
+const PARTIAL_TP_FRACTION = 0.8;
 /**
  * Add when low ≤ avg × (1 − this). Keep **< `STOP_LOSS_PCT`** so add triggers on a shallower dip than stop;
  * intrabar order is TP → pyramid → stop (so equal % no longer skips adds).
@@ -153,7 +153,7 @@ export function evaluateAllSetups(ohlcv) {
  * Run RSI↓MA Setup (copy) backtest. Entry signals from evaluateAllSetups.
  * Copy-only position rules:
  * - Open with first-leg notional `buyAmount` at strategy entry (dip-below-40 close); `lotShares` = that size / entry.
- * - Intrabar order: partial profit target (50% at avg × (1 + PROFIT_TARGET_PCT)), then pyramid add (if low hits dip), then stop. Pyramid dip % should be < initial stop %.
+ * - Intrabar order: partial profit target (PARTIAL_TP_FRACTION of qty at avg × (1 + PROFIT_TARGET_PCT)), then pyramid add (if low hits dip), then stop. Pyramid dip % should be < initial stop %.
  * - After partial TP: remaining shares exit when RSI ≥ RSI_REMAINDER_EXIT (bar close), or stop vs same avg, or max hold / EOD.
  * - Stop: avg × (1 − STOP_LOSS_PCT) until max pyramid adds are exhausted; then avg × (1 − STOP_LOSS_AFTER_MAX_PYRAMID_PCT). Else max hold / EOD.
  * @param {Array<{ open, high, low, close, volume?, time? }>} ohlcv - Candles oldest first
@@ -297,7 +297,7 @@ export function runBacktest(ohlcv, options = {}) {
     };
   }
 
-  /** Intrabar: partial target first, then pyramid (before stop), then stop — re-evaluate after each add. After partial TP, remainder: stop then RSI 70 at close. */
+  /** Intrabar: partial target first, then pyramid (before stop), then stop — re-evaluate after each add. After partial TP, remainder: stop then RSI remainder exit at close. */
   function processOpenBar(i) {
     if (!position) return;
     const c = ohlcv[i];
@@ -413,10 +413,141 @@ export function runBacktest(ohlcv, options = {}) {
   };
 }
 
+/**
+ * SL and first partial TP from average entry, matching `runBacktest` / `processOpenBar` before partial exit.
+ * With `MAX_PYRAMID_ADDS === 0`, initial stop uses `STOP_LOSS_AFTER_MAX_PYRAMID_PCT` (same as `pyramidAdds >= MAX_PYRAMID_ADDS`).
+ * @param {number} avgEntry
+ * @param {{ profitTargetPct?: number, rsiRemainderExit?: number }} [options] — same normalization as runBacktest (profit % can be 10 or 0.10)
+ */
+/**
+ * Intrabar actions for one bar, aligned with `runBacktest` / `processOpenBar` (pyramid adds disabled).
+ * `barsHeld` = index distance from entry bar to this bar (0 on entry day → no intrabar exits).
+ * Max-holding exit is applied by the caller after intrabar actions (see `runBacktest`).
+ *
+ * @param {{ qty: number, totalCost: number, partialTpDone: boolean }} state
+ * @param {{ high?: number, low?: number, close?: number }} bar
+ * @param {number} rsiNow
+ * @param {number} barsHeld
+ * @param {{ profitTargetPct?: number, rsiRemainderExit?: number }} [options]
+ * @returns {{ actions: Array<{ type: 'partial', sellQty: number, price: number } | { type: 'close', price: number, reason: string }> }}
+ */
+export function resolveRsiMaCopyPaperIntrabarActions(state, bar, rsiNow, barsHeld, options = {}) {
+  const actions = [];
+  if (!state || barsHeld < 1) return { actions };
+
+  let profitTargetPct = PROFIT_TARGET_PCT;
+  const rawPt = options?.profitTargetPct;
+  if (rawPt != null && Number.isFinite(Number(rawPt)) && Number(rawPt) > 0) {
+    let v = Number(rawPt);
+    if (v > 1) v /= 100;
+    profitTargetPct = Math.min(5, Math.max(0.005, v));
+  }
+
+  let rsiRemainderExit = RSI_REMAINDER_EXIT;
+  const rawRsi = options?.rsiRemainderExit;
+  if (rawRsi != null && Number.isFinite(Number(rawRsi))) {
+    rsiRemainderExit = Math.min(95, Math.max(5, Math.round(Number(rawRsi))));
+  }
+
+  const hi = bar?.high != null ? Number(bar.high) : NaN;
+  const lo = bar?.low != null ? Number(bar.low) : NaN;
+  const cl = bar?.close != null ? Number(bar.close) : NaN;
+
+  let qty = Math.floor(Number(state.qty));
+  let totalCost = Number(state.totalCost);
+  let partialTpDone = Boolean(state.partialTpDone);
+  if (!Number.isFinite(qty) || qty < 1 || !Number.isFinite(totalCost) || totalCost <= 0) {
+    return { actions };
+  }
+
+  let guard = 0;
+  while (guard < 24 && qty >= 1) {
+    guard += 1;
+    const avg = totalCost / qty;
+    const tp = avg * (1 + profitTargetPct);
+    const slPct = 0 >= MAX_PYRAMID_ADDS ? STOP_LOSS_AFTER_MAX_PYRAMID_PCT : STOP_LOSS_PCT;
+    const sl = avg * (1 - slPct);
+
+    if (partialTpDone) {
+      if (Number.isFinite(lo) && lo <= sl) {
+        actions.push({ type: 'close', price: sl, reason: 'stop_loss_avg_after_max_adds' });
+        break;
+      }
+      if (Number.isFinite(rsiNow) && rsiNow >= rsiRemainderExit && Number.isFinite(cl)) {
+        actions.push({
+          type: 'close',
+          price: cl,
+          reason: `profit_target_partial_then_rsi_${rsiRemainderExit}`,
+        });
+        break;
+      }
+      break;
+    }
+
+    if (Number.isFinite(hi) && hi >= tp) {
+      let sellQty = Math.floor(qty * PARTIAL_TP_FRACTION);
+      if (sellQty < 1) {
+        actions.push({ type: 'close', price: tp, reason: 'profit_target_full_bar' });
+        break;
+      }
+      actions.push({ type: 'partial', sellQty, price: tp });
+      totalCost -= sellQty * avg;
+      qty -= sellQty;
+      partialTpDone = true;
+      continue;
+    }
+
+    if (Number.isFinite(lo) && lo <= sl) {
+      actions.push({ type: 'close', price: sl, reason: 'stop_loss_avg_after_max_adds' });
+      break;
+    }
+    break;
+  }
+
+  return { actions };
+}
+
+export function planRsiMaCopyTradeLevels(avgEntry, options = {}) {
+  const avg = Number(avgEntry);
+  if (!Number.isFinite(avg) || avg <= 0) return null;
+
+  let profitTargetPct = PROFIT_TARGET_PCT;
+  const rawPt = options?.profitTargetPct;
+  if (rawPt != null && Number.isFinite(Number(rawPt)) && Number(rawPt) > 0) {
+    let v = Number(rawPt);
+    if (v > 1) v /= 100;
+    profitTargetPct = Math.min(5, Math.max(0.005, v));
+  }
+
+  let rsiRemainderExit = RSI_REMAINDER_EXIT;
+  const rawRsi = options?.rsiRemainderExit;
+  if (rawRsi != null && Number.isFinite(Number(rawRsi))) {
+    rsiRemainderExit = Math.min(95, Math.max(5, Math.round(Number(rawRsi))));
+  }
+
+  const pyramidAdds = 0;
+  const slPct = pyramidAdds >= MAX_PYRAMID_ADDS ? STOP_LOSS_AFTER_MAX_PYRAMID_PCT : STOP_LOSS_PCT;
+  const slPrice = avg * (1 - slPct);
+  const partialTpPrice = avg * (1 + profitTargetPct);
+
+  const round2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 : null);
+
+  return {
+    stopLossPrice: round2(slPrice),
+    partialTakeProfitPrice: round2(partialTpPrice),
+    stopLossPct: Math.round(slPct * 10000) / 100,
+    partialTakeProfitPct: Math.round(profitTargetPct * 10000) / 100,
+    rsiRemainderExit,
+    partialTpFraction: PARTIAL_TP_FRACTION,
+  };
+}
+
 export default {
   evaluate,
   evaluateAllSetups,
   runBacktest,
+  resolveRsiMaCopyPaperIntrabarActions,
+  planRsiMaCopyTradeLevels,
   MIN_STOCK_PRICE,
   RSI_ARM_LEVEL,
   RSI_PRECONDITION_LEVEL,

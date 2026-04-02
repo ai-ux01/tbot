@@ -164,6 +164,12 @@ export async function getRsiMaSetupCopyCombined(params = {}) {
   if (params.liveOnly === true || params.liveOnly === 1 || params.liveOnly === '1') {
     q.set('liveOnly', 'true');
   }
+  if (params.profitTargetPct != null && params.profitTargetPct !== '') {
+    q.set('profitTargetPct', String(params.profitTargetPct));
+  }
+  if (params.rsiRemainderExit != null && params.rsiRemainderExit !== '') {
+    q.set('rsiRemainderExit', String(params.rsiRemainderExit));
+  }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/combined' + (query ? `?${query}` : ''));
 }

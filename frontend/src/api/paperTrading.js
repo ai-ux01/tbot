@@ -47,6 +47,18 @@ export function paperClose(body) {
   return fetchJson('/close', { method: 'POST', body: JSON.stringify(body || {}) });
 }
 
+/**
+ * Same as the daily cron: bar exits for all open positions, then auto ticks.
+ * Optional `body.rows` — if non-empty, ticks those rows for this run (overrides env for auto entries).
+ */
+export function paperForceDailyPipeline(body = {}) {
+  return fetchJson('/auto-tick', { method: 'POST', body: JSON.stringify(body && typeof body === 'object' ? body : {}) });
+}
+
+export function getPaperScheduleStatus() {
+  return fetchJson('/schedule-status');
+}
+
 export function getPaperTrades(params = {}) {
   const q = new URLSearchParams();
   if (params.month) q.set('month', String(params.month));
