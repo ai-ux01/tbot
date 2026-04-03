@@ -11,6 +11,8 @@ export const RSI_ARM_LEVEL = 55;
 export const RSI_PRECONDITION_LEVEL = 40;
 /** Min close on the RSI cross-down bar (inclusive); bars below this are ignored. */
 export const MIN_STOCK_PRICE = 20;
+/** Omitted max ⇒ no upper cap on entry / cross-down close. */
+export const RSI_MA_COPY_DEFAULT_MAX_STOCK_PRICE = null;
 const MIN_BARS = 30;
 const MAX_HOLDING_DAYS = 7;
 const DEFAULT_BUY_AMOUNT = 1000;
@@ -54,6 +56,35 @@ function isFiniteNumber(v) {
 }
 
 /**
+ * Normalize optional price bounds for evaluate / evaluateAllSetups / runBacktest.
+ * @param {{ minStockPrice?: number, maxStockPrice?: number }} [evalOpts]
+ * @returns {{ minStockPrice: number, maxStockPrice: number|null }}
+ */
+export function resolveRsiMaCopyEvalOpts(evalOpts = {}) {
+  let minP = MIN_STOCK_PRICE;
+  const rawMin = evalOpts?.minStockPrice;
+  if (rawMin != null && rawMin !== '' && Number.isFinite(Number(rawMin)) && Number(rawMin) > 0) {
+    minP = Number(rawMin);
+  }
+  let maxP = RSI_MA_COPY_DEFAULT_MAX_STOCK_PRICE;
+  const rawMax = evalOpts?.maxStockPrice;
+  if (rawMax != null && rawMax !== '' && Number.isFinite(Number(rawMax)) && Number(rawMax) > 0) {
+    maxP = Number(rawMax);
+  }
+  if (maxP != null && minP != null && maxP < minP) {
+    maxP = null;
+  }
+  return { minStockPrice: minP, maxStockPrice: maxP };
+}
+
+function priceInSetupRange(px, minPrice, maxPrice) {
+  if (!isFiniteNumber(px) || px <= 0) return false;
+  if (px < minPrice) return false;
+  if (maxPrice != null && isFiniteNumber(maxPrice) && maxPrice > 0 && px > maxPrice) return false;
+  return true;
+}
+
+/**
  * BUY when sequence is met:
  * 1) RSI dips below `precondition` (40), then
  * 2) RSI rises above `overbought` (55), then
@@ -69,6 +100,7 @@ function findBuySetups(
   overbought = RSI_ARM_LEVEL,
   precondition = RSI_PRECONDITION_LEVEL,
   minPrice = MIN_STOCK_PRICE,
+  maxPrice = null,
 ) {
   if (!Array.isArray(rsi) || !Array.isArray(rsiSma) || !Array.isArray(close) || rsi.length === 0) return [];
   const lowArr = Array.isArray(low) && low.length === close.length ? low : close;
@@ -109,9 +141,9 @@ function findBuySetups(
 
     const crossDownThroughMa = rPrev > mPrev && rNow <= mNow;
     const crossClose = close[i];
-    const closeOk = isFiniteNumber(crossClose) && Number(crossClose) >= minPrice;
+    const closeOk = isFiniteNumber(crossClose) && priceInSetupRange(Number(crossClose), minPrice, maxPrice);
     const entryPx = isFiniteNumber(dipLowestLow) ? Number(dipLowestLow) : null;
-    const entryOk = isFiniteNumber(entryPx) && entryPx >= minPrice;
+    const entryOk = isFiniteNumber(entryPx) && priceInSetupRange(entryPx, minPrice, maxPrice);
 
     if (armed && crossDownThroughMa && closeOk && entryOk && entryPx > 0) {
       setups.push({
@@ -131,9 +163,10 @@ function findBuySetups(
 /**
  * Evaluate RSI↓MA Setup (copy) on full OHLCV. Returns signal for the last bar only.
  * @param {Array<{ open, high, low, close, volume? }>} ohlcv - Candles oldest first
+ * @param {{ minStockPrice?: number, maxStockPrice?: number }} [evalOpts] - optional entry/cross-down price bounds
  * @returns {{ signal: 'BUY'|'HOLD', entryPrice?: number, previousSwingLow?: number, entryIndex?: number, explanation: string }}
  */
-export function evaluate(ohlcv) {
+export function evaluate(ohlcv, evalOpts = {}) {
   const n = Array.isArray(ohlcv) ? ohlcv.length : 0;
   if (!Array.isArray(ohlcv) || n < MIN_BARS) {
     return {
@@ -158,6 +191,7 @@ export function evaluate(ohlcv) {
     return { signal: 'HOLD', explanation: 'Latest bar has invalid close or RSI.' };
   }
 
+  const { minStockPrice, maxStockPrice } = resolveRsiMaCopyEvalOpts(evalOpts);
   const setups = findBuySetups(
     rsi,
     rsiSma,
@@ -165,7 +199,8 @@ export function evaluate(ohlcv) {
     low,
     RSI_ARM_LEVEL,
     RSI_PRECONDITION_LEVEL,
-    MIN_STOCK_PRICE,
+    minStockPrice,
+    maxStockPrice,
   );
   const lastSetup = setups.length > 0 ? setups[setups.length - 1] : null;
   if (lastSetup && lastSetup.entryIndex === i) {
@@ -176,7 +211,11 @@ export function evaluate(ohlcv) {
       firstDipBelow40Close: entry,
       previousSwingLow: entry,
       entryIndex: i,
-      explanation: `RSI↓MA Setup (copy): RSI dipped below ${RSI_PRECONDITION_LEVEL}, then rose above ${RSI_ARM_LEVEL}, then crossed down through RSI MA; entry at lowest low while RSI below ${RSI_PRECONDITION_LEVEL} ${entry.toFixed(2)} (RSI ${r.toFixed(1)}).`,
+      explanation: `RSI↓MA Setup (copy): RSI dipped below ${RSI_PRECONDITION_LEVEL}, then rose above ${RSI_ARM_LEVEL}, then crossed down through RSI MA; entry at lowest low while RSI below ${RSI_PRECONDITION_LEVEL} ${entry.toFixed(2)} (RSI ${r.toFixed(1)}).${
+        evalOpts.minStockPrice != null || evalOpts.maxStockPrice != null
+          ? ` Price band (cross & entry): ${minStockPrice.toFixed(2)}–${maxStockPrice != null ? maxStockPrice.toFixed(2) : '∞'}.`
+          : ''
+      }`,
     };
   }
 
@@ -188,19 +227,23 @@ export function evaluate(ohlcv) {
     };
   }
 
+  const rangeHint =
+    maxStockPrice != null
+      ? `cross/entry close must be in [${minStockPrice}, ${maxStockPrice}] (inclusive).`
+      : `cross/entry close must be ≥ ${minStockPrice}.`;
   return {
     signal: 'HOLD',
-    explanation:
-      'No complete setup in range (need: RSI dip below 40 → rise above 55 → RSI crosses down through RSI MA, with min close filter).',
+    explanation: `No complete setup in range (need: RSI dip below 40 → rise above 55 → RSI crosses down through RSI MA; ${rangeHint}).`,
   };
 }
 
 /**
  * All BUY setups in the series (copy strategy; for backtest and multi-row signals).
  * @param {Array<{ open, high, low, close, volume?, time? }>} ohlcv - Candles oldest first
+ * @param {{ minStockPrice?: number, maxStockPrice?: number }} [evalOpts]
  * @returns {{ setups: Array<{ entryPrice: number, previousSwingLow: number, entryIndex: number }>, lastResult: object|null }}
  */
-export function evaluateAllSetups(ohlcv) {
+export function evaluateAllSetups(ohlcv, evalOpts = {}) {
   const out = { setups: [], lastResult: null };
   if (!Array.isArray(ohlcv) || ohlcv.length < MIN_BARS) return out;
 
@@ -208,6 +251,7 @@ export function evaluateAllSetups(ohlcv) {
   const { close, low, rsi, rsiSma } = series;
   if (!close?.length || !rsi?.length || !rsiSma?.length) return out;
 
+  const { minStockPrice, maxStockPrice } = resolveRsiMaCopyEvalOpts(evalOpts);
   const setups = findBuySetups(
     rsi,
     rsiSma,
@@ -215,11 +259,12 @@ export function evaluateAllSetups(ohlcv) {
     low,
     RSI_ARM_LEVEL,
     RSI_PRECONDITION_LEVEL,
-    MIN_STOCK_PRICE,
+    minStockPrice,
+    maxStockPrice,
   );
   for (const s of setups) out.setups.push(s);
 
-  const last = evaluate(ohlcv);
+  const last = evaluate(ohlcv, evalOpts);
   if (last.signal === 'BUY') out.lastResult = last;
   return out;
 }
@@ -270,7 +315,11 @@ export function runBacktest(ohlcv, options = {}) {
 
   const partialTpFr = normalizePartialTpFraction(options?.partialTpFraction);
 
-  const { setups } = evaluateAllSetups(ohlcv);
+  const evalOpts = resolveRsiMaCopyEvalOpts({
+    minStockPrice: options?.minStockPrice,
+    maxStockPrice: options?.maxStockPrice,
+  });
+  const { setups } = evaluateAllSetups(ohlcv, evalOpts);
   const entryByBar = new Map();
   for (const s of setups) {
     if (s.entryIndex >= 0 && s.entryPrice != null) {
@@ -483,7 +532,8 @@ export function runBacktest(ohlcv, options = {}) {
     avgR: 0,
     maxHoldingDays,
     buyAmount,
-    minStockPrice: MIN_STOCK_PRICE,
+    minStockPrice: evalOpts.minStockPrice,
+    maxStockPrice: evalOpts.maxStockPrice,
     pyramidDipBelowAvgPct: PYRAMID_DIP_BELOW_AVG_PCT,
     maxPyramidAdds: MAX_PYRAMID_ADDS,
     stopLossPct: STOP_LOSS_PCT,
@@ -635,6 +685,7 @@ export default {
   evaluate,
   evaluateAllSetups,
   runBacktest,
+  resolveRsiMaCopyEvalOpts,
   resolveRsiMaCopyPaperIntrabarActions,
   planRsiMaCopyTradeLevels,
   normalizePartialTpFraction,
@@ -642,4 +693,5 @@ export default {
   RSI_ARM_LEVEL,
   RSI_PRECONDITION_LEVEL,
   RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
+  RSI_MA_COPY_DEFAULT_MAX_STOCK_PRICE,
 };

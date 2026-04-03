@@ -8,12 +8,12 @@ export function LoginFlow() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const [tokenInput, setTokenInput] = useState(accessToken || '');
+  const [tokenInput, setTokenInput] = useState(accessToken || 'ab3105c4-9735-46ae-936e-679afe2eb976');
   const [mobileNumber, setMobileNumber] = useState('+917079216930');
   const [ucc, setUcc] = useState('XWYPM');
   const [totp, setTotp] = useState('');
   const [viewCreds, setViewCreds] = useState(null);
-  const [mpin, setMpin] = useState('');
+  const [mpin, setMpin] = useState('123456');
 
   const handleSetToken = (e) => {
     e.preventDefault();

@@ -101,6 +101,16 @@ function rsiMaCopyScanOptsFromEnv() {
     const n = Number(ptf);
     if (Number.isFinite(n) && n > 0) out.partialTpFraction = n;
   }
+  const mn = process.env.PAPER_TRADING_RSI_MA_COPY_MIN_STOCK_PRICE;
+  if (mn != null && String(mn).trim() !== '') {
+    const n = Number(mn);
+    if (Number.isFinite(n) && n >= 0) out.minStockPrice = n;
+  }
+  const mx = process.env.PAPER_TRADING_RSI_MA_COPY_MAX_STOCK_PRICE;
+  if (mx != null && String(mx).trim() !== '') {
+    const n = Number(mx);
+    if (Number.isFinite(n) && n > 0) out.maxStockPrice = n;
+  }
   return out;
 }
 

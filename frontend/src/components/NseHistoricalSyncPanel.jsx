@@ -177,10 +177,9 @@ export function NseHistoricalSyncPanel() {
 
   const handleSyncAll = async () => {
     if (!hasSession || filtered.length === 0) return;
-    const syncedSet = getSyncedTokens();
-    const toSync = filtered.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? '')));
+    const toSync = filtered.filter((inst) => String(inst.instrument_token ?? '').trim());
     if (toSync.length === 0) {
-      setError('All visible instruments already synced. Use "Clear progress" to resync from start.');
+      setError('No instruments with valid codes in the current list.');
       return;
     }
     setError(null);
@@ -224,10 +223,9 @@ export function NseHistoricalSyncPanel() {
       setError(`Serial ${serial} is out of range (1–${filtered.length})`);
       return;
     }
-    const syncedSet = getSyncedTokens();
-    const toSync = slice.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? '')));
+    const toSync = slice.filter((inst) => String(inst.instrument_token ?? '').trim());
     if (toSync.length === 0) {
-      setError('All 150 instruments already synced. Use "Clear progress" to resync.');
+      setError('No instruments with valid codes in this range.');
       return;
     }
     setError(null);
@@ -272,8 +270,11 @@ export function NseHistoricalSyncPanel() {
   };
 
   const syncedSet = getSyncedTokens();
-  const toSyncCount = filtered.filter((inst) => !syncedSet.has(String(inst.instrument_token ?? ''))).length;
-  const alreadySyncedCount = filtered.length - toSyncCount;
+  const visibleWithToken = filtered.filter((inst) => String(inst.instrument_token ?? '').trim());
+  const visibleWithTokenCount = visibleWithToken.length;
+  const markedInBrowser = visibleWithToken.filter((inst) =>
+    syncedSet.has(String(inst.instrument_token ?? ''))
+  ).length;
 
   if (!hasSession) {
     return (
@@ -306,6 +307,7 @@ export function NseHistoricalSyncPanel() {
         <p className="dashboard-card-subtitle">
           List NSE equity stocks and sync 5 years 1D + 1H data when you click a stock or run batch sync. Sync continues in the background if you leave this page.
           For a complete same-day daily bar, run after NSE close (~3:30 PM IST). Server uses IST calendar for incremental ranges.
+          <strong> Sync all</strong> requests every visible symbol; the server skips symbols already updated today (IST) and syncs the rest (backfill / new bars).
         </p>
 
         <div className="kpi-grid">
@@ -318,8 +320,10 @@ export function NseHistoricalSyncPanel() {
             <div className="kpi-value">{filtered.length}</div>
           </div>
           <div className="kpi-card">
-            <div className="kpi-label">Already synced / remaining</div>
-            <div className="kpi-value">{alreadySyncedCount} / {toSyncCount}</div>
+            <div className="kpi-label">Visible (codes) · marked in browser</div>
+            <div className="kpi-value">
+              {visibleWithTokenCount} · {markedInBrowser}
+            </div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Last sync</div>
@@ -362,15 +366,13 @@ export function NseHistoricalSyncPanel() {
           <button
             type="button"
             className="bot-live-button"
-            disabled={listLoading || syncingAll || filtered.length === 0 || toSyncCount === 0}
+            disabled={listLoading || syncingAll || visibleWithTokenCount === 0}
             onClick={handleSyncAll}
-            title={toSyncCount > 0 ? `Sync ${toSyncCount} remaining (${alreadySyncedCount} already done)` : 'All synced'}
+            title="Runs one API call per visible symbol. Server skips symbols already updated today (IST); use Clear progress only to reset browser markers."
           >
             {syncingAll
               ? `Syncing ${syncAllProgress.current} / ${syncAllProgress.total}…`
-              : toSyncCount > 0
-                ? `Sync all (${toSyncCount} remaining)`
-                : 'Sync all (all synced)'}
+              : `Sync all (${visibleWithTokenCount})`}
           </button>
           <button
             type="button"

@@ -21,7 +21,7 @@ export function SessionProvider({ children }) {
     setAccessTokenState(token);
     if (typeof window !== 'undefined') {
       if (token) sessionStorage.setItem('kotak_access_token', token);
-      // else sessionStorage.removeItem('kotak_access_token');
+      else sessionStorage.removeItem('kotak_access_token');
     }
   }, []);
 
@@ -34,9 +34,9 @@ export function SessionProvider({ children }) {
   }, []);
 
   const logout = useCallback(() => {
-    setSession(null);
+    setSessionData(null);
     setAccessToken(null);
-  }, [setSession, setAccessToken]);
+  }, [setSessionData, setAccessToken]);
 
   return (
     <SessionContext.Provider

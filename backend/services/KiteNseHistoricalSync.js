@@ -1,6 +1,8 @@
 /**
  * Sync NSE equity historical data (1h + 1 day) for last 5 years to DB.
  * Uses Kite instruments (NSE, EQ only) and getHistoricalCandles; persists to Candle collection.
+ * Per instrument: checks Mongo first; Kite historical is called only if data is not already updated for today (IST).
+ * Bulk sync (no instrument_token) still calls getInstruments once to obtain the NSE EQ list.
  * Incremental: if yesterday's data exists for an instrument, only fetches/stores today; else full sync.
  */
 
@@ -96,6 +98,28 @@ function isTodayIST(date) {
   const dateStr = date.toLocaleDateString('en-CA', opts);
   const todayStr = now.toLocaleDateString('en-CA', opts);
   return dateStr === todayStr;
+}
+
+/**
+ * DB-only: skip Kite historical calls if we already synced/have coverage for today's IST session.
+ * @returns {{ skip: true, reason: string } | { skip: false, latestDayTime: Date|null, latest60mTime: Date|null }}
+ */
+async function evaluateDbSkipForToday(token, now) {
+  const lastUpdated = await getLastUpdatedAt(token);
+  if (lastUpdated && isTodayIST(lastUpdated)) {
+    return { skip: true, reason: 'candles_updated_today_ist' };
+  }
+  const [latestDayTime, latest60mTime] = await Promise.all([
+    getLatestCandleTime(token, 'day'),
+    getLatestCandleTime(token, '60minute'),
+  ]);
+  const todayStr = toDateStrIST(now);
+  const dayStr = latestDayTime ? toDateStrIST(latestDayTime) : '';
+  const m60Str = latest60mTime ? toDateStrIST(latest60mTime) : '';
+  if (latestDayTime && latest60mTime && dayStr === todayStr && m60Str === todayStr) {
+    return { skip: true, reason: 'latest_day_and_60m_bars_today_ist' };
+  }
+  return { skip: false, latestDayTime, latest60mTime };
 }
 
 /**
@@ -290,20 +314,27 @@ export async function syncNseEquityHistorical(session, options = {}) {
     throw new Error('Database not connected. Set MONGODB_URI and restart.');
   }
 
-  const { instruments: rawList } = await getInstruments(accessToken, apiKey, 'NSE');
-  let list = (rawList || []).filter(
-    (row) => String(row.instrument_type || '').toUpperCase() === 'EQ',
-  );
+  let list;
   if (instrumentToken) {
-    list = list.filter((row) => String(row.instrument_token ?? '') === instrumentToken);
-  }
-  if (tradingsymbol) {
-    const tsLower = tradingsymbol.toLowerCase();
-    list = list.filter((row) => String(row.tradingsymbol ?? '').toLowerCase() === tsLower);
+    list = [
+      {
+        instrument_token: instrumentToken,
+        tradingsymbol: tradingsymbol || '',
+        instrument_type: 'EQ',
+      },
+    ];
+  } else {
+    const { instruments: rawList } = await getInstruments(accessToken, apiKey, 'NSE');
+    list = (rawList || []).filter(
+      (row) => String(row.instrument_type || '').toUpperCase() === 'EQ',
+    );
+    if (tradingsymbol) {
+      const tsLower = tradingsymbol.toLowerCase();
+      list = list.filter((row) => String(row.tradingsymbol ?? '').toLowerCase() === tsLower);
+    }
   }
   if (list.length === 0) {
     throw new Error(
-      instrumentToken ? `Instrument token ${instrumentToken} not found in NSE equity list` :
       tradingsymbol ? `Tradingsymbol ${tradingsymbol} not found in NSE equity list` :
       'No NSE equity instruments to sync'
     );
@@ -326,8 +357,8 @@ export async function syncNseEquityHistorical(session, options = {}) {
     const token = String(inst.instrument_token ?? '');
     if (!token) continue;
     try {
-      const lastUpdated = await getLastUpdatedAt(token);
-      if (lastUpdated && isTodayIST(lastUpdated)) {
+      const dbToday = await evaluateDbSkipForToday(token, now);
+      if (dbToday.skip) {
         const [cpDay, cp60] = await Promise.all([
           getCheckpoint(token, 'day'),
           getCheckpoint(token, '60minute'),
@@ -335,7 +366,8 @@ export async function syncNseEquityHistorical(session, options = {}) {
         logger.info('KiteNseHistoricalSync', {
           symbol: token,
           tradingsymbol: inst.tradingsymbol,
-          msg: 'Skipped (already updated today)',
+          msg: 'Skipped Kite (local DB already has today)',
+          reason: dbToday.reason,
           lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
         });
         if (instruments.length === 1) {
@@ -343,16 +375,13 @@ export async function syncNseEquityHistorical(session, options = {}) {
             instrument_token: token,
             tradingsymbol: inst.tradingsymbol,
             skipped: true,
-            reason: 'already_updated_today_ist',
+            reason: dbToday.reason,
             lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
           };
         }
         continue;
       }
-      const [latestDayTime, latest60mTime] = await Promise.all([
-        getLatestCandleTime(token, 'day'),
-        getLatestCandleTime(token, '60minute'),
-      ]);
+      const { latestDayTime, latest60mTime } = dbToday;
       const [checkpointDay, checkpoint60m] = await Promise.all([
         getCheckpoint(token, 'day'),
         getCheckpoint(token, '60minute'),
@@ -389,6 +418,24 @@ export async function syncNseEquityHistorical(session, options = {}) {
           newStartKiteFrom: newStartKiteFrom(dayRanges, ranges60m),
           newEndKiteTo: newEndKiteTo(dayRanges, ranges60m),
         };
+      }
+
+      if (dayRanges.length === 0 && ranges60m.length === 0) {
+        logger.info('KiteNseHistoricalSync', {
+          symbol: token,
+          tradingsymbol: inst.tradingsymbol,
+          msg: 'Skipped Kite (no date ranges to fetch; DB/checkpoints cover window)',
+        });
+        if (instruments.length === 1) {
+          syncWindow = {
+            instrument_token: token,
+            tradingsymbol: inst.tradingsymbol,
+            skipped: true,
+            reason: 'no_kite_ranges_needed',
+            lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+          };
+        }
+        continue;
       }
 
       const daySync = await syncInstrumentInterval(
@@ -502,27 +549,35 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
 
   const limitOpt = options.limit != null ? Math.max(0, Number(options.limit)) : null;
   const instrumentToken = options.instrument_token?.toString().trim();
-  const tradingsymbol = options.tradingsymbol?.toString().trim()?.toLowerCase();
+  const tradingsymbolRaw = options.tradingsymbol?.toString().trim();
+  const tradingsymbolFilter = tradingsymbolRaw?.toLowerCase();
 
   const errors = [];
 
-  // 🔹 Step 1: Fetch instruments (also rate-limited)
-  const { instruments: rawList } = await withRetryAndThrottle(() =>
-    getInstruments(accessToken, apiKey, 'NSE')
-  );
-
-  let list = (rawList || []).filter(
-    (row) => String(row.instrument_type || '').toUpperCase() === 'EQ'
-  );
-
+  let list;
   if (instrumentToken) {
-    list = list.filter((r) => String(r.instrument_token) === instrumentToken);
-  }
-
-  if (tradingsymbol) {
-    list = list.filter(
-      (r) => String(r.tradingsymbol || '').toLowerCase() === tradingsymbol
+    list = [
+      {
+        instrument_token: instrumentToken,
+        tradingsymbol: tradingsymbolRaw || '',
+        instrument_type: 'EQ',
+      },
+    ];
+  } else {
+    // DB cannot supply full NSE EQ universe; one instruments download, then per-symbol DB gate avoids historical Kite when fresh.
+    const { instruments: rawList } = await withRetryAndThrottle(() =>
+      getInstruments(accessToken, apiKey, 'NSE')
     );
+
+    list = (rawList || []).filter(
+      (row) => String(row.instrument_type || '').toUpperCase() === 'EQ'
+    );
+
+    if (tradingsymbolFilter) {
+      list = list.filter(
+        (r) => String(r.tradingsymbol || '').toLowerCase() === tradingsymbolFilter
+      );
+    }
   }
 
   if (!list.length) {
@@ -547,8 +602,8 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
         if (!token) return { candlesDay: 0, candles60m: 0, syncWindow: null };
 
         try {
-          const lastUpdated = await getLastUpdatedAt(token);
-          if (lastUpdated && isTodayIST(lastUpdated)) {
+          const dbToday = await evaluateDbSkipForToday(token, now);
+          if (dbToday.skip) {
             const [cpDay, cp60] = await Promise.all([
               getCheckpoint(token, 'day'),
               getCheckpoint(token, '60minute'),
@@ -556,7 +611,8 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
             logger.info('KiteNseHistoricalSyncFast', {
               symbol: token,
               tradingsymbol: inst.tradingsymbol,
-              msg: 'Skipped (already updated today)',
+              msg: 'Skipped Kite (local DB already has today)',
+              reason: dbToday.reason,
               lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
             });
             const sw = singleInstrument
@@ -564,17 +620,14 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
                   instrument_token: token,
                   tradingsymbol: inst.tradingsymbol,
                   skipped: true,
-                  reason: 'already_updated_today_ist',
+                  reason: dbToday.reason,
                   lastSyncCheckpoint: checkpointLastSyncIso(cpDay, cp60),
                 }
               : null;
             return { candlesDay: 0, candles60m: 0, syncWindow: sw };
           }
 
-          const [latestDayTime, latest60mTime] = await Promise.all([
-            withRetryAndThrottle(() => getLatestCandleTime(token, 'day')),
-            withRetryAndThrottle(() => getLatestCandleTime(token, '60minute')),
-          ]);
+          const { latestDayTime, latest60mTime } = dbToday;
           const [checkpointDay, checkpoint60m] = await Promise.all([
             getCheckpoint(token, 'day'),
             getCheckpoint(token, '60minute'),
@@ -604,7 +657,7 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
             rangeChunks: { day: dayRanges.length, '60minute': ranges60m.length },
           });
 
-          const sw = singleInstrument
+          let sw = singleInstrument
             ? {
                 instrument_token: token,
                 tradingsymbol: inst.tradingsymbol,
@@ -614,14 +667,33 @@ export async function syncNseEquityHistoricalFast(session, options = {}) {
               }
             : null;
 
-          const [daySync, min60Sync] = await Promise.all([
-            withRetryAndThrottle(() =>
-              syncInstrumentInterval(apiKey, accessToken, inst, 'day', dayRanges)
-            ),
-            withRetryAndThrottle(() =>
-              syncInstrumentInterval(apiKey, accessToken, inst, '60minute', ranges60m)
-            ),
-          ]);
+          let daySync = { total: 0, hadError: false };
+          let min60Sync = { total: 0, hadError: false };
+          if (dayRanges.length > 0 || ranges60m.length > 0) {
+            [daySync, min60Sync] = await Promise.all([
+              withRetryAndThrottle(() =>
+                syncInstrumentInterval(apiKey, accessToken, inst, 'day', dayRanges)
+              ),
+              withRetryAndThrottle(() =>
+                syncInstrumentInterval(apiKey, accessToken, inst, '60minute', ranges60m)
+              ),
+            ]);
+          } else {
+            logger.info('KiteNseHistoricalSyncFast', {
+              symbol: token,
+              tradingsymbol: inst.tradingsymbol,
+              msg: 'Skipped Kite (no date ranges; DB/checkpoints cover window)',
+            });
+            if (singleInstrument) {
+              sw = {
+                instrument_token: token,
+                tradingsymbol: inst.tradingsymbol,
+                skipped: true,
+                reason: 'no_kite_ranges_needed',
+                lastSyncCheckpoint: checkpointLastSyncIso(checkpointDay, checkpoint60m),
+              };
+            }
+          }
 
           await Promise.all([
             !daySync.hadError ? setCheckpoint(token, 'day', now) : Promise.resolve(),

@@ -176,6 +176,8 @@ router.post('/tick', async (req, res) => {
       rsiRemainderExit: req.body?.rsiRemainderExit,
       partialTpFraction: req.body?.partialTpFraction,
       maxHoldingDays: req.body?.maxHoldingDays,
+      minStockPrice: req.body?.minStockPrice,
+      maxStockPrice: req.body?.maxStockPrice,
     };
     const out = await applyPaperTick(paperTradingStore, setupId, symbol, orderValueInr, opts);
     return sendJsonWithEnrichedState(res, out);

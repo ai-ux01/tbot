@@ -61,13 +61,40 @@ export async function mpinValidate(accessToken, viewSid, viewToken, mpin) {
 
 // --- Orders ---
 
-export async function placeOrder(session, jData) {
+export async function placeOrder(session,jData) {
+  console.log('session', session);
+  console.log('jData', jData);
+
   const res = await fetch(`${API_BASE}/orders/place`, {
     method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData }),
+    headers: {...getSessionHeaders(session),
+    Auth: sessionStorage.getItem('kotak_access_token'),
+    'neo-fin-key': 'neotradeapi'},
+    body: JSON.stringify({jData}),
   });
   return handleRes(res);
+}
+export async function placeOrder2(session, jData) {
+  const body = new URLSearchParams({
+    jData: JSON.stringify(jData), // ✅ MUST be string
+  });
+  const res = await fetch(`${API_BASE}/orders/place`, {
+    method: 'POST',
+    headers: {
+      'Auth': session.sessionToken,     // ✅ exact header name
+      'Sid': session.sid,               // ✅ session id
+      'neo-fin-key': 'neotradeapi',     // ✅ required
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: body.toString(), // ✅ form-urlencoded
+  });
+
+  if (res.status === 401) {
+    const text = await res.text();
+    console.error('401 Unauthorized:', text);
+  }
+
+  return res.json();
 }
 
 export async function modifyOrder(session, jData) {

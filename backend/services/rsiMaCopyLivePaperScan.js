@@ -16,6 +16,8 @@ const DEFAULT_SYMBOL_LIMIT = 5000;
  * @param {number} [opts.profitTargetPct] - optional paper rule (percent number, same as API)
  * @param {number} [opts.rsiRemainderExit] - optional
  * @param {number} [opts.maxHoldingDays] - optional
+ * @param {number} [opts.minStockPrice] - optional cross/entry price floor
+ * @param {number} [opts.maxStockPrice] - optional cross/entry price cap
  * @returns {Promise<{ rows: object[], symbolsChecked: number, liveBuyCount: number }>}
  */
 export async function fetchRsiMaCopyLiveDailyPaperRows(opts = {}) {
@@ -39,6 +41,16 @@ export async function fetchRsiMaCopyLiveDailyPaperRows(opts = {}) {
   if (opts.maxHoldingDays != null && Number.isFinite(Number(opts.maxHoldingDays))) {
     rowExtra.maxHoldingDays = Number(opts.maxHoldingDays);
   }
+  if (opts.minStockPrice != null && Number.isFinite(Number(opts.minStockPrice)) && Number(opts.minStockPrice) >= 0) {
+    rowExtra.minStockPrice = Number(opts.minStockPrice);
+  }
+  if (opts.maxStockPrice != null && Number.isFinite(Number(opts.maxStockPrice)) && Number(opts.maxStockPrice) > 0) {
+    rowExtra.maxStockPrice = Number(opts.maxStockPrice);
+  }
+
+  const evalOpts = {};
+  if (rowExtra.minStockPrice != null) evalOpts.minStockPrice = rowExtra.minStockPrice;
+  if (rowExtra.maxStockPrice != null) evalOpts.maxStockPrice = rowExtra.maxStockPrice;
 
   const symbols = await getSymbolsWithStoredCandles();
   const n = Math.min(symbols.length, limit);
@@ -58,7 +70,7 @@ export async function fetchRsiMaCopyLiveDailyPaperRows(opts = {}) {
         close: c.close,
         volume: c.volume ?? 0,
       }));
-      const result = evaluateRsiMaSetupCopyLastBar(ohlcv);
+      const result = evaluateRsiMaSetupCopyLastBar(ohlcv, evalOpts);
       if (result.signal !== 'BUY') continue;
       rows.push({
         setupId: 'rsi-ma-setup-copy',

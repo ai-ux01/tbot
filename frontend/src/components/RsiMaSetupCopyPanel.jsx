@@ -10,6 +10,8 @@ import {
   RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT,
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
   RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT,
+  RSI_MA_COPY_DEFAULT_MIN_STOCK_PRICE,
+  rsiMaCopyPriceQueryFromInputs,
 } from '../utils/rsiMaSetupCopy';
 import { getStoredCandlesLastUpdated } from '../api/kite';
 import { PanelWithFullscreen } from './PanelWithFullscreen';
@@ -183,7 +185,27 @@ export function RsiMaSetupCopyPanel() {
   );
   /** 80 = default partial; 100 = full exit at first TP (no remainder RSI leg). */
   const [partialExitQtyPercent, setPartialExitQtyPercent] = useState(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
+  /** Empty min → server uses default min stock price (₹20). Empty max → no upper cap. */
+  const [minStockPriceInput, setMinStockPriceInput] = useState('');
+  const [maxStockPriceInput, setMaxStockPriceInput] = useState('');
+  const copyPriceBandParams = useMemo(
+    () => rsiMaCopyPriceQueryFromInputs(minStockPriceInput, maxStockPriceInput),
+    [minStockPriceInput, maxStockPriceInput],
+  );
   const [backtestSeries, setBacktestSeries] = useState('day');
+  /** Same key for lazy row fetch and combined-table lookup (must stay in sync). */
+  const rsiMaCopyDetailCacheKey = useCallback(
+    (sym) =>
+      `${sym}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}\0${partialExitQtyPercent}\0${minStockPriceInput}\0${maxStockPriceInput}`,
+    [
+      backtestSeries,
+      profitTargetPctInput,
+      rsiRemainderExitInput,
+      partialExitQtyPercent,
+      minStockPriceInput,
+      maxStockPriceInput,
+    ],
+  );
   const [backtestDetailCache, setBacktestDetailCache] = useState({});
   const [backtestDetailLoading, setBacktestDetailLoading] = useState({});
   const backtestDetailFetchedRef = useRef(new Set());
@@ -216,6 +238,7 @@ export function RsiMaSetupCopyPanel() {
             profitTargetPct: profitTargetPctInput,
             rsiRemainderExit: rsiRemainderExitInput,
             partialTpFraction: partialExitQtyPercent,
+            ...copyPriceBandParams,
           }),
           getStoredCandlesLastUpdated().catch(() => ({ items: [] })),
         ]);
@@ -243,7 +266,7 @@ export function RsiMaSetupCopyPanel() {
         setLoading(false);
       }
     },
-    [signalsListMode, startListTransition, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent],
+    [signalsListMode, startListTransition, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, copyPriceBandParams],
   );
 
   const placePaperBuyFromRow = useCallback(
@@ -264,6 +287,7 @@ export function RsiMaSetupCopyPanel() {
           rsiRemainderExit: rsiRemainderExitInput,
           partialTpFraction: partialExitQtyPercent,
           maxHoldingDays,
+          ...copyPriceBandParams,
         });
         if (!data.ok) {
           setPaperActionError(data.error || data.reason || 'Paper order failed');
@@ -303,7 +327,7 @@ export function RsiMaSetupCopyPanel() {
         setPaperBusySymbol(null);
       }
     },
-    [paperOrderValueInr, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, maxHoldingDays],
+    [paperOrderValueInr, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, maxHoldingDays, copyPriceBandParams],
   );
 
   useEffect(() => {
@@ -347,6 +371,7 @@ export function RsiMaSetupCopyPanel() {
           rsiRemainderExit: rsiRemainderExitInput,
           partialTpFraction: partialExitQtyPercent,
           maxHoldingDays,
+          ...copyPriceBandParams,
         }))
         .filter((r) => r.symbol);
 
@@ -377,6 +402,7 @@ export function RsiMaSetupCopyPanel() {
     rsiRemainderExitInput,
     partialExitQtyPercent,
     maxHoldingDays,
+    copyPriceBandParams,
   ]);
 
   const runBacktest = useCallback(async () => {
@@ -392,6 +418,7 @@ export function RsiMaSetupCopyPanel() {
         profitTargetPct: profitTargetPctInput,
         rsiRemainderExit: rsiRemainderExitInput,
         partialTpFraction: partialExitQtyPercent,
+        ...copyPriceBandParams,
       };
       if (backtestMode === 'all') {
         const data = await getRsiMaSetupCopyBacktestCombined({
@@ -432,11 +459,12 @@ export function RsiMaSetupCopyPanel() {
     profitTargetPctInput,
     rsiRemainderExitInput,
     partialExitQtyPercent,
+    copyPriceBandParams,
     startListTransition,
   ]);
 
   const fetchBacktestDetailsIfNeeded = useCallback(async (symbol) => {
-    const cacheKey = `${symbol}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}\0${partialExitQtyPercent}`;
+    const cacheKey = rsiMaCopyDetailCacheKey(symbol);
     if (!symbol || backtestDetailFetchedRef.current.has(cacheKey)) return;
     backtestDetailFetchedRef.current.add(cacheKey);
     setBacktestDetailLoading((l) => ({ ...l, [cacheKey]: true }));
@@ -448,6 +476,7 @@ export function RsiMaSetupCopyPanel() {
         profitTargetPct: profitTargetPctInput,
         rsiRemainderExit: rsiRemainderExitInput,
         partialTpFraction: partialExitQtyPercent,
+        ...copyPriceBandParams,
       });
       startListTransition(() => setBacktestDetailCache((c) => ({ ...c, [cacheKey]: data })));
     } catch {
@@ -456,7 +485,18 @@ export function RsiMaSetupCopyPanel() {
     } finally {
       setBacktestDetailLoading((l) => ({ ...l, [cacheKey]: false }));
     }
-  }, [maxHoldingDays, backtestSeries, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent, startListTransition]);
+  }, [
+    maxHoldingDays,
+    backtestSeries,
+    profitTargetPctInput,
+    rsiRemainderExitInput,
+    partialExitQtyPercent,
+    minStockPriceInput,
+    maxStockPriceInput,
+    copyPriceBandParams,
+    rsiMaCopyDetailCacheKey,
+    startListTransition,
+  ]);
 
   return (
     <PanelWithFullscreen panelClassName="rsi-ma-setup-copy-panel" title="RSI↓MA Setup (copy)">
@@ -613,15 +653,58 @@ export function RsiMaSetupCopyPanel() {
               setProfitTargetPctInput(RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT);
               setRsiRemainderExitInput(RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT);
               setPartialExitQtyPercent(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
+              setMinStockPriceInput('');
+              setMaxStockPriceInput('');
             }}
           >
             Reset defaults
           </button>
         </div>
+        <div className="rsi-ma-copy-exit-filters-row" style={{ marginTop: 10 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span
+              className="muted"
+              style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}
+              title={`Min price (₹) for cross-down close and entry low. Leave blank for server default (₹${RSI_MA_COPY_DEFAULT_MIN_STOCK_PRICE}).`}
+            >
+              Setup min ₹
+            </span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              placeholder={`default ${RSI_MA_COPY_DEFAULT_MIN_STOCK_PRICE}`}
+              value={minStockPriceInput}
+              onChange={(e) => setMinStockPriceInput(e.target.value)}
+              className="bot-live-input"
+              style={{ width: 88, minWidth: 72 }}
+            />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span
+              className="muted"
+              style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}
+              title="Optional max price (₹) for cross-down close and entry low. Blank = no cap."
+            >
+              Setup max ₹
+            </span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              placeholder="none"
+              value={maxStockPriceInput}
+              onChange={(e) => setMaxStockPriceInput(e.target.value)}
+              className="bot-live-input"
+              style={{ width: 88, minWidth: 72 }}
+            />
+          </label>
+        </div>
         <p className="muted" style={{ margin: '10px 0 0', fontSize: '0.75rem', lineHeight: 1.4 }}>
           Used for backtests and for <strong>SL / partial TP / remainder RSI</strong> shown on the Signals tab (same rules as{' '}
           <code>runBacktest</code> in <code>rsiMaSetupCopy.js</code>). <strong>100% at 1st TP</strong> exits the whole position at
-          the partial TP price (no remainder RSI leg). Entry detection is unchanged.
+          the partial TP price (no remainder RSI leg). <strong>Setup min/max</strong> filter which BUYs qualify (cross bar close and
+          entry low must fall in range).
         </p>
       </div>
 
@@ -916,7 +999,7 @@ export function RsiMaSetupCopyPanel() {
                 <tbody>
                   {(backtestCombinedResult.results || []).map((r) => {
                     const sym = r.symbol;
-                    const cacheKey = `${sym}\0${backtestSeries}\0${profitTargetPctInput}\0${rsiRemainderExitInput}\0${partialExitQtyPercent}`;
+                    const cacheKey = rsiMaCopyDetailCacheKey(sym);
                     const detail = backtestDetailCache[cacheKey];
                     const loading = backtestDetailLoading[cacheKey];
                     const monthlyRows =

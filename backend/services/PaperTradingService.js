@@ -128,7 +128,10 @@ export async function evaluatePaperSetup(setupId, symbol, opts = {}) {
       const ev =
         setupId === 'eighty-percent'
           ? evaluateEightyPercent(loaded.ohlcv)
-          : evaluateRsiMaSetupCopy(loaded.ohlcv);
+          : evaluateRsiMaSetupCopy(loaded.ohlcv, {
+              minStockPrice: opts.minStockPrice,
+              maxStockPrice: opts.maxStockPrice,
+            });
       const last = loaded.ohlcv[loaded.ohlcv.length - 1];
       const currentPrice =
         last?.close != null && Number.isFinite(Number(last.close)) ? Number(last.close) : null;
@@ -750,6 +753,8 @@ export async function runPaperTradingAutoTicks(store, rows) {
       rsiRemainderExit: row.rsiRemainderExit,
       partialTpFraction: row.partialTpFraction,
       maxHoldingDays: row.maxHoldingDays,
+      minStockPrice: row.minStockPrice,
+      maxStockPrice: row.maxStockPrice,
     };
     try {
       const out = await applyPaperTick(store, setupId, symbol, orderValueInr, opts);

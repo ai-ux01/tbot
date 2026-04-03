@@ -29,6 +29,7 @@ import {
   RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
   RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
   planRsiMaCopyTradeLevels,
+  resolveRsiMaCopyEvalOpts,
 } from '../services/rsiMaSetupCopy.js';
 import { aggregateDailyToMonthly, normalizeBacktestSeries } from '../services/candleAggregate.js';
 import { aggregateTradesByExitMonth } from '../services/backtestMonthlyBreakdown.js';
@@ -263,6 +264,16 @@ function parseRsiMaCopyExitQuery(query) {
   return out;
 }
 
+/** @returns {{ evalOpts: object, error?: string }} */
+function parseRsiMaCopyPriceRangeQuery(query) {
+  const pf = parseRsiBacktestPriceFilter(query?.minStockPrice, query?.maxStockPrice);
+  if ('error' in pf) return { evalOpts: {}, error: pf.error };
+  const evalOpts = {};
+  if (pf.minPrice != null) evalOpts.minStockPrice = pf.minPrice;
+  if (pf.maxPrice != null) evalOpts.maxStockPrice = pf.maxPrice;
+  return { evalOpts };
+}
+
 function attachRsiMaCopyTradeLevels(row, entryPrice, exitOpts) {
   if (!row || row.signal_type !== 'BUY' || entryPrice == null || !Number.isFinite(Number(entryPrice))) return row;
   const levels = planRsiMaCopyTradeLevels(entryPrice, exitOpts);
@@ -271,7 +282,7 @@ function attachRsiMaCopyTradeLevels(row, entryPrice, exitOpts) {
 }
 
 /** RSI↓MA Setup (copy): same row shape as primary; uses `rsiMaSetupCopy.js` for independent tuning. */
-async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe, exitOpts = {}) {
+async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe, exitOpts = {}, evalOpts = {}) {
   const candles = await getCandlesForSignal(symbol, timeframe, 500);
   if (candles.length < 30) return null;
   const ohlcv = candles.map((c) => ({
@@ -281,16 +292,21 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe,
     close: c.close,
     volume: c.volume ?? 0,
   }));
-  const { setups, lastResult } = evaluateRsiMaSetupCopyAllSetups(ohlcv);
+  const { setups, lastResult } = evaluateRsiMaSetupCopyAllSetups(ohlcv, evalOpts);
   const indicators = computeIndicators(ohlcv);
   const rsiValue = indicators?.rsi != null && Number.isFinite(indicators.rsi) ? Math.round(indicators.rsi * 100) / 100 : null;
   const now = new Date();
   const rows = [];
+  const { minStockPrice: effMinP, maxStockPrice: effMaxP } = resolveRsiMaCopyEvalOpts(evalOpts);
+  const priceFilterParts = [];
+  if (evalOpts.minStockPrice != null) priceFilterParts.push(`min ₹${effMinP}`);
+  if (effMaxP != null) priceFilterParts.push(`max ₹${effMaxP}`);
+  const priceFilterNote = priceFilterParts.length ? ` Price filter (cross & entry close): ${priceFilterParts.join(', ')}.` : '';
 
   if (setups.length > 0) {
     for (const s of setups) {
       const entryTime = candles[s.entryIndex]?.time ?? null;
-      const explanation = `RSI↓MA Setup (copy): RSI dipped below ${RSI_MA_COPY_RSI_PRECONDITION}, rose above ${RSI_MA_COPY_RSI_ARM}, then crossed down through RSI MA; entry is lowest low while RSI below ${RSI_MA_COPY_RSI_PRECONDITION} ${Number(s.entryPrice).toFixed(2)}.`;
+      const explanation = `RSI↓MA Setup (copy): RSI dipped below ${RSI_MA_COPY_RSI_PRECONDITION}, rose above ${RSI_MA_COPY_RSI_ARM}, then crossed down through RSI MA; entry is lowest low while RSI below ${RSI_MA_COPY_RSI_PRECONDITION} ${Number(s.entryPrice).toFixed(2)}.${priceFilterNote}`;
       const psl = s.previousSwingLow ?? s.entryPrice;
       rows.push(
         attachRsiMaCopyTradeLevels(
@@ -334,7 +350,7 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe,
 }
 
 /** BUY on latest daily bar only (same as `evaluate()` in rsiMaSetupCopy.js), for scan-all live list. */
-async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOpts = {}) {
+async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOpts = {}, evalOpts = {}) {
   const candles = await getCandlesForSignal(symbol, 'day', 500);
   if (candles.length < 30) return null;
   const ohlcv = candles.map((c) => ({
@@ -344,7 +360,7 @@ async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOp
     close: c.close,
     volume: c.volume ?? 0,
   }));
-  const result = evaluateRsiMaSetupCopyLastBar(ohlcv);
+  const result = evaluateRsiMaSetupCopyLastBar(ohlcv, evalOpts);
   if (result.signal !== 'BUY') return null;
   const indicators = computeIndicators(ohlcv);
   const rsiValue =
@@ -769,16 +785,18 @@ router.get('/rsi-ma-setup-copy/combined', async (req, res) => {
     const liveOnly =
       req.query.liveOnly === 'true' || req.query.liveOnly === '1' || req.query.liveOnly === 1;
     const exitOpts = parseRsiMaCopyExitQuery(req.query);
+    const { evalOpts, error: priceErr } = parseRsiMaCopyPriceRangeQuery(req.query);
+    if (priceErr) return res.status(400).json({ error: priceErr });
     const combined = [];
     for (let i = 0; i < Math.min(symbols.length, limit); i++) {
       const { symbol: sym, tradingsymbol: ts } = symbols[i];
       if (!sym && !ts) continue;
       try {
         if (liveOnly) {
-          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts, exitOpts);
+          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts, exitOpts, evalOpts);
           if (row) combined.push(row);
         } else {
-          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day', exitOpts);
+          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day', exitOpts, evalOpts);
           if (!rows || rows.length === 0) continue;
           combined.push(...rows);
         }
@@ -824,10 +842,17 @@ router.post('/rsi-ma-setup-copy/backtest', async (req, res) => {
     if ('error' in rsiRem) return res.status(400).json({ error: rsiRem.error });
     const pFrac = parseRsiMaCopyPartialTpFraction(req.body?.partialTpFraction ?? req.query?.partialTpFraction);
     if ('error' in pFrac) return res.status(400).json({ error: pFrac.error });
+    const pf = parseRsiBacktestPriceFilter(
+      req.body?.minStockPrice ?? req.query?.minStockPrice,
+      req.body?.maxStockPrice ?? req.query?.maxStockPrice,
+    );
+    if ('error' in pf) return res.status(400).json({ error: pf.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
     if (pFrac.value != null) copyBtOpts.partialTpFraction = pFrac.value;
+    if (pf.minPrice != null) copyBtOpts.minStockPrice = pf.minPrice;
+    if (pf.maxPrice != null) copyBtOpts.maxStockPrice = pf.maxPrice;
     const loaded = await loadOhlcvRsiMaBacktest(symbol, series);
     if (!loaded.ok) return res.status(loaded.status).json(loaded.body);
     const result = runRsiMaSetupCopyBacktest(loaded.ohlcv, copyBtOpts);
@@ -872,10 +897,14 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
     if ('error' in rsiRem) return res.status(400).json({ error: rsiRem.error });
     const pFrac = parseRsiMaCopyPartialTpFraction(req.query.partialTpFraction);
     if ('error' in pFrac) return res.status(400).json({ error: pFrac.error });
+    const pf = parseRsiBacktestPriceFilter(req.query.minStockPrice, req.query.maxStockPrice);
+    if ('error' in pf) return res.status(400).json({ error: pf.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
     if (pFrac.value != null) copyBtOpts.partialTpFraction = pFrac.value;
+    if (pf.minPrice != null) copyBtOpts.minStockPrice = pf.minPrice;
+    if (pf.maxPrice != null) copyBtOpts.maxStockPrice = pf.maxPrice;
     const barUnit = normalizeBacktestSeries(series) === 'month' ? 'month' : 'day';
     const symbols = await getSymbolsWithStoredCandles();
     const reqLimit = parseInt(req.query.limit, 10);
@@ -913,7 +942,8 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
         totalInvestedAmount,
         totalPnl,
         totalPnlPercent,
-        minStockPrice: RSI_MA_COPY_MIN_PRICE,
+        minStockPrice: copyBtOpts.minStockPrice ?? RSI_MA_COPY_MIN_PRICE,
+        maxStockPrice: copyBtOpts.maxStockPrice ?? null,
         barUnit,
         symbolsProcessed: results.length,
         symbolsSkippedInsufficientCandles: skippedInsufficientCandles,
@@ -925,6 +955,8 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
       profitTargetPct: ptp.value ?? RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PCT,
       rsiRemainderExit: rsiRem.value ?? RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
       partialTpFraction: pFrac.value ?? RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
+      minStockPrice: pf.minPrice ?? RSI_MA_COPY_MIN_PRICE,
+      maxStockPrice: pf.maxPrice ?? null,
     };
     void persistBacktestRun({
       route: 'GET /api/signals/rsi-ma-setup-copy/backtest/combined',

@@ -14,12 +14,51 @@ const sessionHeaders = (auth, sid) => ({
   'neo-fin-key': NEO_FIN_KEY,
 });
 
+/**
+ * Neo order APIs expect form field jData = JSON string (same as curl --data-urlencode jData='{...}').
+ * Accept a plain object (we stringify) or an already-serialized JSON string (validated, not re-stringified).
+ */
+function jDataToNeoFormString(jData) {
+  if (jData == null) throw new Error('jData is required');
+  if (typeof jData === 'string') {
+    const t = jData.trim();
+    if (!t) throw new Error('jData is required');
+    try {
+      JSON.parse(t);
+    } catch {
+      throw new Error('jData must be valid JSON when sent as a string');
+    }
+    return t;
+  }
+  if (typeof jData === 'object' && !Array.isArray(jData)) {
+    return JSON.stringify(jData);
+  }
+  throw new Error('jData must be a plain object or JSON string');
+}
+
 /** Turn Kotak error payload (string or object) into a single string for Error message. */
 function toErrorString(v) {
   if (v == null) return '';
   if (typeof v === 'string') return v;
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
+}
+
+/** Neo often returns { errMsg, stat, stCode } (e.g. 100008 unauthorized) — avoid opaque JSON.stringify in errors. */
+function neoApiErrorSummary(data, httpStatus) {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const errMsg = data.errMsg != null ? String(data.errMsg).trim() : '';
+    const stat = data.stat != null ? String(data.stat) : '';
+    const stCode = data.stCode;
+    if (errMsg || stat || stCode != null) {
+      const bits = [];
+      if (errMsg) bits.push(errMsg);
+      if (stat && stat !== 'Ok') bits.push(`stat=${stat}`);
+      if (stCode != null) bits.push(`stCode=${stCode}`);
+      return bits.join(' · ');
+    }
+  }
+  return toErrorString(data?.message ?? data?.error ?? data) || `HTTP ${httpStatus}`;
 }
 
 /**
@@ -62,11 +101,11 @@ export async function mpinValidate(accessToken, viewSid, viewToken, mpin) {
 }
 
 /**
- * POST with application/x-www-form-urlencoded and jData
+ * POST with application/x-www-form-urlencoded and jData (matches Neo: Auth, Sid, neo-fin-key, Content-Type).
  */
 async function postForm(baseUrl, path, auth, sid, jData) {
   const url = baseUrl.replace(/\/$/, '') + path;
-  const body = new URLSearchParams({ jData: JSON.stringify(jData) }).toString();
+  const body = new URLSearchParams({ jData: jDataToNeoFormString(jData) }).toString();
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -78,7 +117,10 @@ async function postForm(baseUrl, path, auth, sid, jData) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 403 || res.status === 401) {
-      throw new SessionExpiredError(toErrorString(data.message ?? data.error ?? data) || 'Session expired');
+      const detail = neoApiErrorSummary(data, res.status);
+      throw new SessionExpiredError(
+        `Kotak Neo rejected the broker session (${detail}). Run MPIN login again; broker tokens expire independently of this app.`,
+      );
     }
     const msg = toErrorString(data.message ?? data.error ?? data) || `Request failed: ${res.status}`;
     throw new Error(msg);
@@ -98,7 +140,10 @@ async function get(baseUrl, path, auth, sid) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 403 || res.status === 401) {
-      throw new SessionExpiredError(toErrorString(data.message ?? data.error ?? data) || 'Session expired');
+      const detail = neoApiErrorSummary(data, res.status);
+      throw new SessionExpiredError(
+        `Kotak Neo rejected the broker session (${detail}). Run MPIN login again; broker tokens expire independently of this app.`,
+      );
     }
     const msg = toErrorString(data.message ?? data.error ?? data) || `Request failed: ${res.status}`;
     throw new Error(msg);
@@ -106,7 +151,7 @@ async function get(baseUrl, path, auth, sid) {
   return data;
 }
 
-// --- Orders ---
+// --- Orders (Neo: POST .../quick/order/... + x-www-form-urlencoded jData={...}) ---
 
 export async function placeOrder(baseUrl, auth, sid, jData) {
   return postForm(baseUrl, '/quick/order/rule/ms/place', auth, sid, jData);

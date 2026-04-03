@@ -173,6 +173,12 @@ export async function getRsiMaSetupCopyCombined(params = {}) {
   if (params.partialTpFraction != null && params.partialTpFraction !== '') {
     q.set('partialTpFraction', String(params.partialTpFraction));
   }
+  if (params.minStockPrice != null && params.minStockPrice !== '') {
+    q.set('minStockPrice', String(params.minStockPrice));
+  }
+  if (params.maxStockPrice != null && params.maxStockPrice !== '') {
+    q.set('maxStockPrice', String(params.maxStockPrice));
+  }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/combined' + (query ? `?${query}` : ''));
 }
@@ -203,6 +209,12 @@ export async function getRsiMaSetupCopyBacktestCombined(params = {}) {
   }
   if (params.partialTpFraction != null && params.partialTpFraction !== '') {
     q.set('partialTpFraction', String(params.partialTpFraction));
+  }
+  if (params.minStockPrice != null && params.minStockPrice !== '') {
+    q.set('minStockPrice', String(params.minStockPrice));
+  }
+  if (params.maxStockPrice != null && params.maxStockPrice !== '') {
+    q.set('maxStockPrice', String(params.maxStockPrice));
   }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/backtest/combined' + (query ? `?${query}` : ''));
