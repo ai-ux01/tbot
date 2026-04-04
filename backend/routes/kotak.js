@@ -211,9 +211,9 @@ function assertOrderJDataPresent(jData) {
   return { ok: true };
 }
 
-// --- Login ---
+// --- Login (also mounted at POST /login/totp and /login/mpin on app root for legacy clients) ---
 
-router.post('/login/totp', async (req, res) => {
+export async function loginTotpHandler(req, res) {
   try {
     const accessToken = getAccessToken(req);
     const { mobileNumber, ucc, totp } = req.body || {};
@@ -232,9 +232,9 @@ router.post('/login/totp', async (req, res) => {
       error: msg,
     });
   }
-});
+}
 
-router.post('/login/mpin', async (req, res) => {
+export async function loginMpinHandler(req, res) {
   try {
     const accessToken = getKotakConsumerKey(req);
     const viewSid = req.headers.sid;
@@ -262,7 +262,6 @@ router.post('/login/mpin', async (req, res) => {
     const { sessionId } = createSession({ auth, sid, baseUrl });
     const inner = neoMpinInnerPayload(data);
     logger.info('login/mpin', { step: 'success' });
-    // Same shape as Kotak `tradeApiValidate`: { data: { token, sid, baseUrl, ... } }; plus app `sessionId`.
     res.json({ sessionId, data: inner });
   } catch (err) {
     const msg = typeof err?.message === 'string' ? err.message : (err ? String(err) : 'MPIN validate failed');
@@ -271,7 +270,10 @@ router.post('/login/mpin', async (req, res) => {
       error: msg,
     });
   }
-});
+}
+
+router.post('/login/totp', loginTotpHandler);
+router.post('/login/mpin', loginMpinHandler);
 
 // --- Orders ---
 router.post('/orders/place', async (req, res) => {

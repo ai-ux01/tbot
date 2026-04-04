@@ -67,11 +67,7 @@ The browser may need `credentials: 'include'` (already used on API calls) and th
 
 ### `404` on `https://<render>/login/totp`
 
-That path is **wrong**. The backend exposes Kotak under **`/api/kotak`**:
-
-- Correct: **`POST https://<render-host>/api/kotak/login/totp`**
-
-This usually means the **Vercel build is outdated**: it used `VITE_API_BASE_URL` as the full API base. Pull latest `frontend` (which uses `getBackendOrigin()` + `/api/kotak`), set **`VITE_API_BASE_URL`** to the Render **origin only** (no `/api`), **redeploy Vercel**, hard-refresh the app.
+Preferred URL: **`POST /api/kotak/login/totp`**. The server also accepts **`POST /login/totp`** at the same host (alias for old frontends that omit `/api/kotak`). Deploy the latest **backend** to Render so that alias exists.
 
 ### `502` on `POST .../api/kotak/login/totp` (local or Render)
 

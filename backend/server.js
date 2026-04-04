@@ -4,7 +4,7 @@ import cookieParser from 'cookie-parser';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
 import { config } from './config.js';
-import kotakRoutes from './routes/kotak.js';
+import kotakRoutes, { loginTotpHandler, loginMpinHandler } from './routes/kotak.js';
 import botRoutes from './routes/bot.js';
 import swingRoutes from './routes/swing.js';
 import kiteRoutes from './routes/kite.js';
@@ -60,6 +60,8 @@ app.use((req, res, next) => {
 // Explicit preflight for login so cross-origin POST from 5173 always succeeds
 app.options('/api/kotak/login/totp', (_, res) => res.sendStatus(204));
 app.options('/api/kotak/login/mpin', (_, res) => res.sendStatus(204));
+app.options('/login/totp', (_, res) => res.sendStatus(204));
+app.options('/login/mpin', (_, res) => res.sendStatus(204));
 app.options('/api/kite/sync-nse-historical', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 app.options('/api/kite/stored-candles', (_, res) => res.set('Allow', 'GET').sendStatus(204));
 app.options('/api/kite/stored-candles/summary', (_, res) => res.set('Allow', 'GET').sendStatus(204));
@@ -77,6 +79,9 @@ app.options('/api/signals/rsi-setup/backtest', (_, res) => res.set('Allow', 'POS
 app.options('/api/signals/train', (_, res) => res.set('Allow', 'POST').sendStatus(204));
 
 app.use('/api/kotak', kotakRoutes);
+/** Same handlers as /api/kotak/login/* — some deployed frontends POST to origin + /login/totp (missing /api/kotak). */
+app.post('/login/totp', loginTotpHandler);
+app.post('/login/mpin', loginMpinHandler);
 app.use('/api/bot', botRoutes);
 app.use('/api/swing', swingRoutes);
 app.use('/api/kite', kiteRoutes);
@@ -86,17 +91,6 @@ app.use('/api/signals', signalsRoutes);
 app.use('/api/paper-trading', paperTradingRoutes);
 
 app.get('/health', (_, res) => res.json({ ok: true }));
-
-/** Misconfigured clients often POST here when VITE_API_BASE_URL is origin-only but the UI build still used it as the full Kotak base (missing /api/kotak). */
-const kotakPathHint = {
-  error: 'Not found — Kotak proxy routes are under /api/kotak',
-  postTo: '/api/kotak/login/totp',
-  tip: 'Use POST /api/kotak/login/totp with Authorization: Bearer <consumer_key>. On Vercel set VITE_API_BASE_URL=https://<your-render-host>.onrender.com (origin only) and redeploy so the client appends /api/kotak.',
-};
-app.post('/login/totp', (_, res) => res.status(404).json({ ...kotakPathHint }));
-app.post('/login/mpin', (_, res) =>
-  res.status(404).json({ ...kotakPathHint, postTo: '/api/kotak/login/mpin' }),
-);
 
 app.use((_, res) => res.status(404).json({ error: 'Not found' }));
 
