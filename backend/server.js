@@ -87,6 +87,17 @@ app.use('/api/paper-trading', paperTradingRoutes);
 
 app.get('/health', (_, res) => res.json({ ok: true }));
 
+/** Misconfigured clients often POST here when VITE_API_BASE_URL is origin-only but the UI build still used it as the full Kotak base (missing /api/kotak). */
+const kotakPathHint = {
+  error: 'Not found — Kotak proxy routes are under /api/kotak',
+  postTo: '/api/kotak/login/totp',
+  tip: 'Use POST /api/kotak/login/totp with Authorization: Bearer <consumer_key>. On Vercel set VITE_API_BASE_URL=https://<your-render-host>.onrender.com (origin only) and redeploy so the client appends /api/kotak.',
+};
+app.post('/login/totp', (_, res) => res.status(404).json({ ...kotakPathHint }));
+app.post('/login/mpin', (_, res) =>
+  res.status(404).json({ ...kotakPathHint, postTo: '/api/kotak/login/mpin' }),
+);
+
 app.use((_, res) => res.status(404).json({ error: 'Not found' }));
 
 async function start() {

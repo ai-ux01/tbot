@@ -1,0 +1,14 @@
+# Render Blueprint: free Web Service for the Node API.
+# Dashboard: New → Blueprint → connect repo, or link this file when creating a service.
+# After deploy, set CORS_ORIGIN to your Vercel URL and add secrets (MONGODB_URI, Kite, etc.).
+
+services:
+  - type: web
+    name: bot-ai-backend
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health

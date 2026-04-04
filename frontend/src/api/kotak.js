@@ -3,7 +3,9 @@
  * Session: { sessionId, baseUrl, neo? } — order POSTs also send `X-Session-Id` (app id) plus Neo `Auth`, `Sid`, `neo-fin-key`.
  */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api/kotak';
+import { getBackendOrigin } from '../utils/apiOrigin.js';
+
+const API_BASE = `${getBackendOrigin()}/api/kotak`;
 
 /** App MPIN session id; Express matches case-insensitively. */
 const HDR_SESSION_ID = 'X-Session-Id';

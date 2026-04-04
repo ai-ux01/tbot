@@ -1,15 +1,11 @@
 import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { createSocketIOConnection } from '../api/socketIO.js';
+import { getBackendOrigin } from '../utils/apiOrigin.js';
 
 const BotLiveContext = createContext(null);
 
 function getSocketUrl() {
-  const base = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api/kotak';
-  try {
-    return new URL(base).origin;
-  } catch {
-    return 'http://localhost:4000';
-  }
+  return getBackendOrigin();
 }
 
 export function BotLiveProvider({ children }) {
