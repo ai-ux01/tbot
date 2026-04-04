@@ -1,6 +1,27 @@
 import { KOTAK_LOGIN_BASE, NEO_FIN_KEY } from '../config.js';
 import { SessionExpiredError } from '../errors.js';
 
+/** Neo trade JWT / sid must not include Bearer or stray whitespace (common copy-paste issues). */
+export function normalizeNeoAuthToken(auth) {
+  if (auth == null) return '';
+  let s = String(auth).trim();
+  if (/^Bearer\s+/i.test(s)) s = s.replace(/^Bearer\s+/i, '').trim();
+  return s;
+}
+
+export function normalizeNeoSid(sid) {
+  if (sid == null) return '';
+  return String(sid).trim();
+}
+
+/** Kotak docs: https host, no trailing slash (we normalize before each request). */
+export function normalizeKotakBaseUrl(baseUrl) {
+  if (baseUrl == null || !String(baseUrl).trim()) return '';
+  let s = String(baseUrl).trim().replace(/\/$/, '');
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+  return s;
+}
+
 // Kotak login APIs expect raw consumer key in Authorization (no "Bearer " prefix).
 const defaultHeaders = (accessToken) => ({
   'Authorization': accessToken,
@@ -8,11 +29,22 @@ const defaultHeaders = (accessToken) => ({
   'Content-Type': 'application/json',
 });
 
-const sessionHeaders = (auth, sid) => ({
-  'Auth': auth,
-  'Sid': sid,
-  'neo-fin-key': NEO_FIN_KEY,
-});
+/** Outbound Neo session calls: match curl samples (Auth, Sid, neo-fin-key, Accept). */
+const NEO_HTTP_UA =
+  process.env.KOTAK_HTTP_USER_AGENT ||
+  'Mozilla/5.0 (compatible; NeoTradeAPI/1.0; +https://github.com/nodejs/undici)';
+
+function sessionHeaders(auth, sid) {
+  const a = normalizeNeoAuthToken(auth);
+  const s = normalizeNeoSid(sid);
+  return {
+    Accept: 'application/json',
+    Auth: a,
+    Sid: s,
+    'neo-fin-key': NEO_FIN_KEY,
+    'User-Agent': NEO_HTTP_UA,
+  };
+}
 
 /**
  * Neo order APIs expect form field jData = JSON string (same as curl --data-urlencode jData='{...}').
@@ -101,10 +133,18 @@ export async function mpinValidate(accessToken, viewSid, viewToken, mpin) {
 }
 
 /**
- * POST with application/x-www-form-urlencoded and jData (matches Neo: Auth, Sid, neo-fin-key, Content-Type).
+ * Neo order POSTs (place/modify/cancel/…): per Kotak spec
+ *   POST {baseUrl}/quick/order/...
+ *   Headers: Accept: application/json, Auth, Sid, neo-fin-key: neotradeapi,
+ *            Content-Type: application/x-www-form-urlencoded
+ *   Body: URL-encoded field jData = stringified JSON object.
+ * `auth` / `sid` / `baseUrl` come from MPIN `tradeApiValidate` (`data.token`, `data.sid`, `data.baseUrl`).
+ * Use the **Trade** JWT from MPIN — a **View**-only token will fail order APIs.
  */
 async function postForm(baseUrl, path, auth, sid, jData) {
-  const url = baseUrl.replace(/\/$/, '') + path;
+  const root = normalizeKotakBaseUrl(baseUrl);
+  if (!root) throw new Error('Kotak baseUrl is missing');
+  const url = root + path;
   const body = new URLSearchParams({ jData: jDataToNeoFormString(jData) }).toString();
   const res = await fetch(url, {
     method: 'POST',
@@ -132,7 +172,9 @@ async function postForm(baseUrl, path, auth, sid, jData) {
  * GET with Auth + Sid
  */
 async function get(baseUrl, path, auth, sid) {
-  const url = baseUrl.replace(/\/$/, '') + path;
+  const root = normalizeKotakBaseUrl(baseUrl);
+  if (!root) throw new Error('Kotak baseUrl is missing');
+  const url = root + path;
   const res = await fetch(url, {
     method: 'GET',
     headers: sessionHeaders(auth, sid),
@@ -199,7 +241,9 @@ export async function getHoldings(baseUrl, auth, sid) {
 
 export async function getQuotes(baseUrl, accessToken, exchangeSegment, symbol) {
   const path = `/script-details/1.0/quotes/neosymbol/${exchangeSegment}|${symbol}/all`;
-  const url = baseUrl.replace(/\/$/, '') + path;
+  const root = normalizeKotakBaseUrl(baseUrl);
+  if (!root) throw new Error('Kotak baseUrl is missing');
+  const url = root + path;
   const res = await fetch(url, {
     method: 'GET',
     headers: { 'Authorization': accessToken },
@@ -265,7 +309,9 @@ function normalizeHistoricalResponse(data, interval) {
 
 export async function getScripmasterPaths(baseUrl, accessToken) {
   const path = '/script-details/1.0/masterscrip/file-paths';
-  const url = baseUrl.replace(/\/$/, '') + path;
+  const root = normalizeKotakBaseUrl(baseUrl);
+  if (!root) throw new Error('Kotak baseUrl is missing');
+  const url = root + path;
   const res = await fetch(url, {
     method: 'GET',
     headers: { 'Authorization': accessToken },

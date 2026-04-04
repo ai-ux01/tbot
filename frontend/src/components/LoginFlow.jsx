@@ -71,9 +71,19 @@ export function LoginFlow() {
         viewCreds.viewToken,
         mpin.trim()
       );
+      const d = data.data;
+      const neo =
+        d && typeof d === 'object'
+          ? {
+              token: d.token,
+              sid: d.sid,
+              baseUrl: d.baseUrl,
+            }
+          : undefined;
       setSessionData({
         sessionId: data.sessionId,
-        baseUrl: data.baseUrl,
+        baseUrl: d?.baseUrl ?? data.baseUrl,
+        neo,
       });
       setStep('done');
     } catch (err) {

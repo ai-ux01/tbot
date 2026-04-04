@@ -26,11 +26,26 @@ setIO(io);
 app.use(cors({
   origin: config.corsOrigin,
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Auth', 'Sid', 'X-Session-Id', 'X-Kite-Session-Id', 'neo-fin-key'],
+  allowedHeaders: [
+    'Accept',
+    'Content-Type',
+    'Authorization',
+    'authorization',
+    'Auth',
+    'Sid',
+    'x-session-id',
+    'X-Session-Id',
+    'sid',
+    'auth',
+    'neo-fin-key',
+    'X-Kite-Session-Id',
+    'x-kotak-base-url',
+  ],
   credentials: true,
 }));
 app.use(cookieParser());
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 // Request logging: structured (no tokens logged)
 app.use((req, res, next) => {

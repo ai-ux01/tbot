@@ -33,3 +33,6 @@ Thumbs.db
 
 # Optional: local data (uncomment if you don't want to commit swing data)
 # backend/data/
+
+# Kotak broker sessions (JWT on disk when persistence enabled)
+backend/data/kotak-broker-sessions.json

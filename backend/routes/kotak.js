@@ -18,19 +18,35 @@ function getAccessToken(req) {
   return token;
 }
 
-/** Resolve session from X-Session-Id header. Broker tokens stay server-side. */
+/** Consumer key from `Authorization` — raw UUID or `Bearer <uuid>` (Kotak Neo style). */
+function getKotakConsumerKey(req) {
+  const auth = req.headers.authorization;
+  if (!auth || !String(auth).trim()) {
+    throw new Error('Missing Authorization header (Kotak consumer key)');
+  }
+  let token = String(auth).trim();
+  if (/^Bearer\s+/i.test(token)) {
+    token = token.replace(/^Bearer\s+/i, '').trim();
+  }
+  if (!token || token === 'null' || token === 'undefined') {
+    throw new Error('Access token (consumer key) is missing. Set it in step 1 of the login form.');
+  }
+  return token;
+}
+
+/** Resolve session from `x-session-id` header. Broker tokens stay server-side. */
 function getSessionFromReq(req) {
-  const raw = req.get('X-Session-Id');
+  const raw = req.get('x-session-id');
   if (raw == null || String(raw).trim() === '') {
     throw new SessionExpiredError(
-      'Missing X-Session-Id header. Send the sessionId from MPIN login as header X-Session-Id.',
+      'Missing x-session-id header. Send the sessionId from MPIN login as header x-session-id.',
     );
   }
   const sessionId = String(raw).split(',')[0].trim();
   const session = getSessionFromStore(sessionId);
   if (!session) {
     throw new SessionExpiredError(
-      'Session expired or unknown. Log in with MPIN again (broker sessions live only in server memory and are lost when the API restarts).',
+      'Session expired or unknown. Log in with MPIN again (sessions persist to disk in non-production unless KOTAK_PERSIST_SESSIONS=0).',
     );
   }
   return session;
@@ -56,6 +72,14 @@ function extractNeoTradeSessionFromMpinResponse(body) {
   };
 }
 
+/** Kotak `tradeApiValidate` wraps fields in `data`; normalize to that inner object. */
+function neoMpinInnerPayload(body) {
+  if (body?.data != null && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    return body.data;
+  }
+  return body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+}
+
 /**
  * Stored session has `auth` (= Neo JWT) and `sid` (= Neo Sid). Do not use app session UUID as `sid`.
  */
@@ -79,6 +103,85 @@ function brokerFromStoredSession(session) {
 
 function getBrokerSessionFromReq(req) {
   return brokerFromStoredSession(getSessionFromReq(req));
+}
+
+function normalizeKotakBaseUrlHeader(v) {
+  if (v == null || !String(v).trim()) return null;
+  return String(v).replace(/\/$/, '').trim();
+}
+
+/** Neo JWT from `Auth` / `auth`, or `Authorization: Bearer <jwt>` when the bearer value looks like a JWT. */
+function neoAuthFromOrderReq(req) {
+  const direct = (req.get('Auth') ?? req.get('auth'))?.trim();
+  if (direct) return direct;
+  const az = req.get('authorization')?.trim();
+  if (!az) return null;
+  const rest = /^Bearer\s+/i.test(az) ? az.replace(/^Bearer\s+/i, '').trim() : az;
+  return rest.startsWith('eyJ') ? rest : null;
+}
+
+/**
+ * Order POSTs:
+ * - Prefer server session: lookup by `x-session-id` (app id) or `Sid` (Neo sid or app id, via sessionStore).
+ * - Stored row always supplies matching `auth` + Neo `sid` for Kotak.
+ * - Else direct Neo: `Auth` + `Sid` (Neo) + base URL from `x-kotak-base-url` or `KOTAK_BASE_URL`.
+ */
+function resolveBrokerForOrderReq(req) {
+  const envBase =
+    process.env.KOTAK_BASE_URL && String(process.env.KOTAK_BASE_URL).trim()
+      ? String(process.env.KOTAK_BASE_URL).replace(/\/$/, '')
+      : null;
+  const authHeader = neoAuthFromOrderReq(req);
+  const sidHeader = (req.get('Sid') ?? req.get('sid'))?.trim();
+  const xSession = req.get('x-session-id')?.split(',')[0]?.trim();
+
+  let stored = null;
+  if (xSession) stored = getSessionFromStore(xSession);
+  if (!stored && sidHeader) stored = getSessionFromStore(sidHeader);
+
+  if (stored) {
+    const b = brokerFromStoredSession(stored);
+    const baseUrl =
+      normalizeKotakBaseUrlHeader(req.get('x-kotak-base-url')) ?? b.baseUrl ?? envBase;
+    if (!baseUrl) {
+      throw new SessionExpiredError(
+        'Missing base URL: set x-kotak-base-url or KOTAK_BASE_URL, or re-login with MPIN.',
+      );
+    }
+    if (!b.auth || !b.sid) {
+      throw new SessionExpiredError('Stored session incomplete; run MPIN login again.');
+    }
+    return { auth: b.auth, sid: b.sid, baseUrl };
+  }
+
+  const baseUrl =
+    normalizeKotakBaseUrlHeader(req.get('x-kotak-base-url')) ?? envBase;
+
+  // Do not forward app session UUID as Kotak Sid when client also sent the same value as x-session-id
+  // (misconfiguration). Otherwise allow direct Neo credentials without x-session-id.
+  if (authHeader && sidHeader && baseUrl) {
+    if (xSession && xSession === sidHeader) {
+      throw new SessionExpiredError(
+        'Broker session not found: Sid must be Kotak Neo sid, not the app session id. Run MPIN on this API or send Neo sid from tradeApiValidate.',
+      );
+    }
+    return { auth: authHeader, sid: sidHeader, baseUrl };
+  }
+
+  throw new SessionExpiredError(
+    'No broker session: complete MPIN on this server, or send Auth + Sid (Neo) + base URL (KOTAK_BASE_URL or x-kotak-base-url).',
+  );
+}
+
+/** jData from JSON `{ jData }` or form field `jData=...`. */
+function jDataFromOrderRequest(req) {
+  const raw = req.body?.jData;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t === '' ? undefined : t;
+  }
+  return raw;
 }
 
 function sendError(res, err, defaultStatus = 502) {
@@ -133,7 +236,7 @@ router.post('/login/totp', async (req, res) => {
 
 router.post('/login/mpin', async (req, res) => {
   try {
-    const accessToken = getAccessToken(req);
+    const accessToken = getKotakConsumerKey(req);
     const viewSid = req.headers.sid;
     const viewToken = req.headers.auth;
     const { mpin } = req.body || {};
@@ -157,8 +260,10 @@ router.post('/login/mpin', async (req, res) => {
       });
     }
     const { sessionId } = createSession({ auth, sid, baseUrl });
+    const inner = neoMpinInnerPayload(data);
     logger.info('login/mpin', { step: 'success' });
-    res.json({ sessionId, baseUrl });
+    // Same shape as Kotak `tradeApiValidate`: { data: { token, sid, baseUrl, ... } }; plus app `sessionId`.
+    res.json({ sessionId, data: inner });
   } catch (err) {
     const msg = typeof err?.message === 'string' ? err.message : (err ? String(err) : 'MPIN validate failed');
     logger.error('login/mpin', { error: msg });
@@ -171,11 +276,8 @@ router.post('/login/mpin', async (req, res) => {
 // --- Orders ---
 router.post('/orders/place', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    console.log('auth???', auth);
-    console.log('sid???', sid);
-    console.log('baseUrl???', baseUrl);
-    const jData = req.body?.jData;
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req);
     const check = assertOrderJDataPresent(jData);
     if (!check.ok) return res.status(400).json({ error: check.error });
     const data = await kotak.placeOrder(baseUrl, auth, sid, jData);
@@ -187,8 +289,8 @@ router.post('/orders/place', async (req, res) => {
 
 router.post('/orders/modify', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    const jData = req.body?.jData;
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req);
     const check = assertOrderJDataPresent(jData);
     if (!check.ok) return res.status(400).json({ error: check.error });
     const data = await kotak.modifyOrder(baseUrl, auth, sid, jData);
@@ -200,8 +302,8 @@ router.post('/orders/modify', async (req, res) => {
 
 router.post('/orders/cancel', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    const jData = req.body?.jData ?? {};
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req) ?? {};
     const data = await kotak.cancelOrder(baseUrl, auth, sid, jData);
     res.json(data);
   } catch (err) {
@@ -211,8 +313,8 @@ router.post('/orders/cancel', async (req, res) => {
 
 router.post('/orders/exit-cover', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    const jData = req.body?.jData ?? {};
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req) ?? {};
     const data = await kotak.exitCover(baseUrl, auth, sid, jData);
     res.json(data);
   } catch (err) {
@@ -222,8 +324,8 @@ router.post('/orders/exit-cover', async (req, res) => {
 
 router.post('/orders/exit-bracket', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    const jData = req.body?.jData ?? {};
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req) ?? {};
     const data = await kotak.exitBracket(baseUrl, auth, sid, jData);
     res.json(data);
   } catch (err) {
@@ -245,8 +347,8 @@ router.get('/reports/orders', async (req, res) => {
 
 router.post('/reports/order-history', async (req, res) => {
   try {
-    const { auth, sid, baseUrl } = getBrokerSessionFromReq(req);
-    const jData = req.body?.jData ?? {};
+    const { auth, sid, baseUrl } = resolveBrokerForOrderReq(req);
+    const jData = jDataFromOrderRequest(req) ?? {};
     const data = await kotak.orderHistory(baseUrl, auth, sid, jData);
     res.json(data);
   } catch (err) {

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   postRsiSetupBacktest,
@@ -62,6 +62,16 @@ export function BacktestHubPanel() {
     RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT,
   );
   const [partialExitQtyPercent, setPartialExitQtyPercent] = useState(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
+  const [copyFromDate, setCopyFromDate] = useState('');
+  const [copyToDate, setCopyToDate] = useState('');
+  const copyDateParams = useMemo(() => {
+    const o = {};
+    const f = String(copyFromDate || '').trim();
+    const t = String(copyToDate || '').trim();
+    if (f) o.fromDate = f;
+    if (t) o.toDate = t;
+    return o;
+  }, [copyFromDate, copyToDate]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -100,6 +110,7 @@ export function BacktestHubPanel() {
           profitTargetPct: profitTargetPctInput,
           rsiRemainderExit: rsiRemainderExitInput,
           partialTpFraction: partialExitQtyPercent,
+          ...copyDateParams,
         };
         if (mode === 'single') {
           data = await postRsiMaSetupCopyBacktest({ symbol: sym, maxHoldingDays, series, ...copyExit });
@@ -123,7 +134,19 @@ export function BacktestHubPanel() {
     } finally {
       setLoading(false);
     }
-  }, [setupId, mode, symbol, maxHoldingDays, series, limit, capital, profitTargetPctInput, rsiRemainderExitInput, partialExitQtyPercent]);
+  }, [
+    setupId,
+    mode,
+    symbol,
+    maxHoldingDays,
+    series,
+    limit,
+    capital,
+    profitTargetPctInput,
+    rsiRemainderExitInput,
+    partialExitQtyPercent,
+    copyDateParams,
+  ]);
 
   return (
     <div className="backtest-hub-panel">
@@ -296,10 +319,37 @@ export function BacktestHubPanel() {
                     setProfitTargetPctInput(RSI_MA_COPY_DEFAULT_PROFIT_TARGET_PERCENT_INPUT);
                     setRsiRemainderExitInput(RSI_MA_COPY_DEFAULT_RSI_REMAINDER_EXIT);
                     setPartialExitQtyPercent(RSI_MA_COPY_DEFAULT_PARTIAL_EXIT_QTY_PERCENT);
+                    setCopyFromDate('');
+                    setCopyToDate('');
                   }}
                 >
                   Reset defaults
                 </button>
+              </div>
+              <div className="rsi-ma-copy-exit-filters-row" style={{ marginTop: 10 }}>
+                <span className="muted" style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                  Date range (UTC, optional)
+                </span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>From</span>
+                  <input
+                    type="date"
+                    className="bot-live-input"
+                    style={{ minWidth: 130 }}
+                    value={copyFromDate}
+                    onChange={(e) => setCopyFromDate(e.target.value)}
+                  />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>To</span>
+                  <input
+                    type="date"
+                    className="bot-live-input"
+                    style={{ minWidth: 130 }}
+                    value={copyToDate}
+                    onChange={(e) => setCopyToDate(e.target.value)}
+                  />
+                </label>
               </div>
             </div>
           )}

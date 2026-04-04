@@ -12,6 +12,10 @@ import { logger } from '../logger.js';
 import { getAlertService } from './AlertService.js';
 
 const CANDLE_LIMIT = 500;
+/** Extra calendar history before `from` so RSI/MA have warmup when using a date range. */
+const RANGE_WARMUP_MS = 200 * 24 * 60 * 60 * 1000;
+const RANGE_MAX_DOCS = 10000;
+const RANGE_FALLBACK_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 const ML_WEIGHT = 0.6;
 const INDICATOR_WEIGHT = 0.4;
 const MIN_ML_PROB = 0.7;
@@ -30,16 +34,94 @@ export async function getSymbolsWithStoredCandles() {
   return Array.isArray(rows) ? rows : [];
 }
 
+export function utcDayStartFromInput(raw) {
+  if (raw == null || raw === '') return null;
+  if (raw instanceof Date) {
+    const t = raw.getTime();
+    if (Number.isNaN(t)) return null;
+    return new Date(Date.UTC(raw.getUTCFullYear(), raw.getUTCMonth(), raw.getUTCDate(), 0, 0, 0, 0));
+  }
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+  }
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) return null;
+  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 0, 0, 0, 0));
+}
+
+export function utcDayEndFromInput(raw) {
+  if (raw == null || raw === '') return null;
+  if (raw instanceof Date) {
+    const t = raw.getTime();
+    if (Number.isNaN(t)) return null;
+    return new Date(Date.UTC(raw.getUTCFullYear(), raw.getUTCMonth(), raw.getUTCDate(), 23, 59, 59, 999));
+  }
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
+  }
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) return null;
+  return new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate(), 23, 59, 59, 999));
+}
+
 /**
  * Fetch last N candles from DB for symbol or tradingsymbol + timeframe (oldest first).
  * Uses most recent N candles so RSI/indicators reflect current bar, not oldest N.
+ *
+ * Optional `options.from` / `options.to` (Date or YYYY-MM-DD): load bars in window [from−warmup, to],
+ * oldest first (cap RANGE_MAX_DOCS). Omits range behavior when both are null/undefined.
  */
-export async function getCandlesForSignal(symbol, timeframe, limit = CANDLE_LIMIT) {
+export async function getCandlesForSignal(symbol, timeframe, limit = CANDLE_LIMIT, options = {}) {
   const sym = String(symbol).trim();
   const isToken = /^\d+$/.test(sym);
   const filter = { timeframe };
   if (isToken) filter.symbol = sym;
   else filter.$or = [{ symbol: sym }, { tradingsymbol: { $regex: new RegExp(`^${sym.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }];
+
+  const fromRaw = options?.from;
+  const toRaw = options?.to;
+  const useRange = fromRaw != null && fromRaw !== '' || (toRaw != null && toRaw !== '');
+
+  if (useRange) {
+    const fromDay = utcDayStartFromInput(fromRaw);
+    const toDay = utcDayEndFromInput(toRaw);
+    if ((fromRaw != null && fromRaw !== '' && !fromDay) || (toRaw != null && toRaw !== '' && !toDay)) {
+      return [];
+    }
+    const nowEnd = utcDayEndFromInput(new Date());
+    const upper = toDay ?? nowEnd;
+    let lower;
+    if (fromDay) {
+      lower = new Date(fromDay.getTime() - RANGE_WARMUP_MS);
+    } else if (toDay) {
+      lower = new Date(toDay.getTime() - RANGE_FALLBACK_MS);
+    } else {
+      lower = new Date(0);
+    }
+    if (fromDay && upper.getTime() < fromDay.getTime()) {
+      return [];
+    }
+    const docs = await Candle.find({
+      ...filter,
+      time: { $gte: lower, $lte: upper },
+    })
+      .sort({ time: 1 })
+      .limit(RANGE_MAX_DOCS)
+      .lean();
+    return docs.map((d) => ({
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume ?? 0,
+      time: d.time,
+    }));
+  }
+
   const docs = await Candle.find(filter)
     .sort({ time: -1 })
     .limit(limit)

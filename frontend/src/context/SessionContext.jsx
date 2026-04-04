@@ -46,7 +46,9 @@ export function SessionProvider({ children }) {
         session,
         setSessionData,
         logout,
-        isLoggedIn: !!session?.sessionId && !!session?.baseUrl,
+        isLoggedIn:
+          !!session?.baseUrl &&
+          (!!session?.sessionId || !!(session?.neo?.token && session?.neo?.sid)),
       }}
     >
       {children}

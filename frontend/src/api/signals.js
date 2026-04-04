@@ -179,6 +179,12 @@ export async function getRsiMaSetupCopyCombined(params = {}) {
   if (params.maxStockPrice != null && params.maxStockPrice !== '') {
     q.set('maxStockPrice', String(params.maxStockPrice));
   }
+  if (params.fromDate != null && String(params.fromDate).trim() !== '') {
+    q.set('fromDate', String(params.fromDate).trim());
+  }
+  if (params.toDate != null && String(params.toDate).trim() !== '') {
+    q.set('toDate', String(params.toDate).trim());
+  }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/combined' + (query ? `?${query}` : ''));
 }
@@ -187,9 +193,10 @@ export async function getRsiMaSetupCopyCombined(params = {}) {
  * POST /api/signals/rsi-ma-setup-copy/backtest
  */
 export async function postRsiMaSetupCopyBacktest(body) {
+  const b = body && typeof body === 'object' ? { ...body } : {};
   return fetchJson('/rsi-ma-setup-copy/backtest', {
     method: 'POST',
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(b),
   });
 }
 
@@ -215,6 +222,12 @@ export async function getRsiMaSetupCopyBacktestCombined(params = {}) {
   }
   if (params.maxStockPrice != null && params.maxStockPrice !== '') {
     q.set('maxStockPrice', String(params.maxStockPrice));
+  }
+  if (params.fromDate != null && String(params.fromDate).trim() !== '') {
+    q.set('fromDate', String(params.fromDate).trim());
+  }
+  if (params.toDate != null && String(params.toDate).trim() !== '') {
+    q.set('toDate', String(params.toDate).trim());
   }
   const query = q.toString();
   return fetchJson('/rsi-ma-setup-copy/backtest/combined' + (query ? `?${query}` : ''));

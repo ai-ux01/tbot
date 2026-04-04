@@ -1,9 +1,13 @@
 /**
  * Kotak API client – mirrors backend /api/kotak routes.
- * Session is { sessionId, baseUrl }; broker tokens never reach the frontend.
+ * Session: { sessionId, baseUrl, neo? } — order POSTs also send `X-Session-Id` (app id) plus Neo `Auth`, `Sid`, `neo-fin-key`.
  */
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4000/api/kotak';
+
+/** App MPIN session id; Express matches case-insensitively. */
+const HDR_SESSION_ID = 'X-Session-Id';
+const HDR_NEO_FIN_KEY = 'neo-fin-key';
 
 export const SESSION_EXPIRED_CODE = 'SESSION_EXPIRED';
 
@@ -16,10 +20,41 @@ function getAuthHeaders(accessToken) {
 
 function getSessionHeaders(session) {
   if (!session?.sessionId) throw new Error('No session');
-  return {
-    'Content-Type': 'application/json',
-    'X-Session-Id': session.sessionId,
-  };
+  const h = new Headers();
+  h.set('content-type', 'application/json');
+  h.set(HDR_SESSION_ID, session.sessionId);
+  return h;
+}
+
+function hasNeoCredentials(session) {
+  const n = session?.neo;
+  return !!(n && typeof n === 'object' && n.token && n.sid && n.baseUrl);
+}
+
+/**
+ * Neo-style Auth, Sid, neo-fin-key. `Sid` must be Kotak Neo `sid` from MPIN (not app `sessionId`).
+ * Fallback: app `sessionId` in Sid only if `neo` is missing (server store lookup by app id).
+ */
+function orderPostInit(session, jData) {
+  if (!session?.sessionId && !hasNeoCredentials(session)) {
+    throw new Error('No session: complete MPIN login first');
+  }
+  const jStr = typeof jData === 'string' ? jData : JSON.stringify(jData);
+  const headers = new Headers();
+  headers.set('Accept', 'application/json');
+  headers.set('Content-Type', 'application/x-www-form-urlencoded');
+  headers.set(HDR_NEO_FIN_KEY, 'neotradeapi');
+  if (session?.sessionId) {
+    headers.set(HDR_SESSION_ID, session.sessionId);
+  }
+  if (hasNeoCredentials(session)) {
+    headers.set('Auth', session.neo.token);
+    headers.set('Sid', session.neo.sid);
+  } else if (session?.sessionId) {
+    headers.set('Sid', session.sessionId);
+  }
+  const body = new URLSearchParams({ jData: jStr }).toString();
+  return { headers, body };
 }
 
 async function handleRes(res) {
@@ -46,14 +81,16 @@ export async function totpLogin(accessToken, { mobileNumber, ucc, totp }) {
 }
 
 export async function mpinValidate(accessToken, viewSid, viewToken, mpin) {
+  const key = String(accessToken ?? '').replace(/^Bearer\s+/i, '').trim();
+  const mpinHeaders = new Headers();
+  mpinHeaders.set('Content-Type', 'application/json');
+  mpinHeaders.set('Authorization', key);
+  mpinHeaders.set('Sid', viewSid);
+  mpinHeaders.set('Auth', viewToken);
+  mpinHeaders.set(HDR_NEO_FIN_KEY, 'neotradeapi');
   const res = await fetch(`${API_BASE}/login/mpin`, {
     method: 'POST',
-    headers: {
-      ...getAuthHeaders(accessToken),
-      sid: viewSid,
-      auth: viewToken,
-      'neo-fin-key': 'neotradeapi',
-    },
+    headers: mpinHeaders,
     body: JSON.stringify({ mpin }),
   });
   return handleRes(res);
@@ -61,75 +98,37 @@ export async function mpinValidate(accessToken, viewSid, viewToken, mpin) {
 
 // --- Orders ---
 
-export async function placeOrder(session,jData) {
-  console.log('session', session);
-  console.log('jData', jData);
-
+export async function placeOrder(session, jData) {
+  const { headers, body } = orderPostInit(session, jData);
   const res = await fetch(`${API_BASE}/orders/place`, {
     method: 'POST',
-    headers: {...getSessionHeaders(session),
-    Auth: sessionStorage.getItem('kotak_access_token'),
-    'neo-fin-key': 'neotradeapi'},
-    body: JSON.stringify({jData}),
+    headers,
+    body,
   });
   return handleRes(res);
 }
-export async function placeOrder2(session, jData) {
-  const body = new URLSearchParams({
-    jData: JSON.stringify(jData), // ✅ MUST be string
-  });
-  const res = await fetch(`${API_BASE}/orders/place`, {
-    method: 'POST',
-    headers: {
-      'Auth': session.sessionToken,     // ✅ exact header name
-      'Sid': session.sid,               // ✅ session id
-      'neo-fin-key': 'neotradeapi',     // ✅ required
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: body.toString(), // ✅ form-urlencoded
-  });
-
-  if (res.status === 401) {
-    const text = await res.text();
-    console.error('401 Unauthorized:', text);
-  }
-
-  return res.json();
-}
 
 export async function modifyOrder(session, jData) {
-  const res = await fetch(`${API_BASE}/orders/modify`, {
-    method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData }),
-  });
+  const { headers, body } = orderPostInit(session, jData);
+  const res = await fetch(`${API_BASE}/orders/modify`, { method: 'POST', headers, body });
   return handleRes(res);
 }
 
 export async function cancelOrder(session, jData) {
-  const res = await fetch(`${API_BASE}/orders/cancel`, {
-    method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData: jData || { am: 'NO' } }),
-  });
+  const { headers, body } = orderPostInit(session, jData || { am: 'NO' });
+  const res = await fetch(`${API_BASE}/orders/cancel`, { method: 'POST', headers, body });
   return handleRes(res);
 }
 
 export async function exitCover(session, jData) {
-  const res = await fetch(`${API_BASE}/orders/exit-cover`, {
-    method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData: jData || { am: 'NO' } }),
-  });
+  const { headers, body } = orderPostInit(session, jData || { am: 'NO' });
+  const res = await fetch(`${API_BASE}/orders/exit-cover`, { method: 'POST', headers, body });
   return handleRes(res);
 }
 
 export async function exitBracket(session, jData) {
-  const res = await fetch(`${API_BASE}/orders/exit-bracket`, {
-    method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData: jData || { am: 'NO' } }),
-  });
+  const { headers, body } = orderPostInit(session, jData || { am: 'NO' });
+  const res = await fetch(`${API_BASE}/orders/exit-bracket`, { method: 'POST', headers, body });
   return handleRes(res);
 }
 
@@ -143,11 +142,8 @@ export async function getOrderBook(session) {
 }
 
 export async function orderHistory(session, jData) {
-  const res = await fetch(`${API_BASE}/reports/order-history`, {
-    method: 'POST',
-    headers: getSessionHeaders(session),
-    body: JSON.stringify({ jData: jData || {} }),
-  });
+  const { headers, body } = orderPostInit(session, jData || {});
+  const res = await fetch(`${API_BASE}/reports/order-history`, { method: 'POST', headers, body });
   return handleRes(res);
 }
 

@@ -7,7 +7,13 @@ import { Signal } from '../database/models/Signal.js';
 import { isDbConnected } from '../database/connection.js';
 import { computeIndicators, computeIndicatorSeries } from '../services/IndicatorService.js';
 import { rsiSwingBuyStrategy } from '../services/strategies/RsiSetupStrategy.js';
-import { evaluateAndPersistSignal, getCandlesForSignal, getSymbolsWithStoredCandles } from '../services/SignalEngine.js';
+import {
+  evaluateAndPersistSignal,
+  getCandlesForSignal,
+  getSymbolsWithStoredCandles,
+  utcDayStartFromInput,
+  utcDayEndFromInput,
+} from '../services/SignalEngine.js';
 import { evaluate as evaluateRsiSetup, evaluateAllSetups, runRsiSetupBacktest, normalizeRsiSetupMode } from '../services/rsi-setup/index.js';
 import { evaluate as evaluateEmaCrossover } from '../services/emaCrossover.js';
 import {
@@ -41,12 +47,101 @@ const RSI_MA_MIN_MONTHLY_BARS = 30;
 const RSI_MA_MIN_DAILY_BARS = 30;
 
 /**
- * Load OHLCV for RSI↓MA / eighty-percent backtests: daily bars, or daily aggregated to monthly (UTC month).
+ * Optional `fromDate` / `toDate` (YYYY-MM-DD, UTC calendar day) for RSI↓MA Setup (copy) only.
+ * @returns {{ range: null } | { range: { filterFrom: Date|null, filterTo: Date, candleOpts: object } } | { error: string }}
  */
-async function loadOhlcvRsiMaBacktest(symbol, series) {
+function parseRsiMaCopyDateRangePayload(query = {}, body = {}) {
+  const fromRaw = body.fromDate ?? body.from ?? query.fromDate ?? query.from;
+  const toRaw = body.toDate ?? body.to ?? query.toDate ?? query.to;
+  const hasFrom = fromRaw != null && String(fromRaw).trim() !== '';
+  const hasTo = toRaw != null && String(toRaw).trim() !== '';
+  if (!hasFrom && !hasTo) return { range: null };
+
+  const filterFrom = hasFrom ? utcDayStartFromInput(fromRaw) : null;
+  if (hasFrom && !filterFrom) return { error: 'Invalid fromDate (use YYYY-MM-DD)' };
+
+  let filterTo;
+  if (hasTo) {
+    filterTo = utcDayEndFromInput(toRaw);
+    if (!filterTo) return { error: 'Invalid toDate (use YYYY-MM-DD)' };
+  } else {
+    filterTo = utcDayEndFromInput(new Date());
+  }
+
+  if (hasFrom && hasTo && filterFrom.getTime() > filterTo.getTime()) {
+    return { error: 'fromDate must be on or before toDate' };
+  }
+
+  const candleOpts = {};
+  if (hasFrom) candleOpts.from = filterFrom;
+  if (hasTo) candleOpts.to = utcDayEndFromInput(toRaw);
+
+  return {
+    range: {
+      filterFrom,
+      filterTo,
+      candleOpts,
+    },
+  };
+}
+
+function filterTradesByRsiMaCopyDateRange(trades, filterFrom, filterTo) {
+  if (!Array.isArray(trades) || (!filterFrom && !filterTo)) return trades;
+  const lo = filterFrom ? filterFrom.getTime() : -Infinity;
+  const hi = filterTo ? filterTo.getTime() : Infinity;
+  return trades.filter((tr) => {
+    const et = tr?.entryTime;
+    if (et == null) return false;
+    const ms = et instanceof Date ? et.getTime() : new Date(et).getTime();
+    if (Number.isNaN(ms)) return false;
+    return ms >= lo && ms <= hi;
+  });
+}
+
+function recomputeRsiMaCopyBacktestSummary(result, filteredTrades) {
+  const wins = filteredTrades.filter((t) => Number(t?.pnl) > 0).length;
+  let equity = 1;
+  for (const x of filteredTrades) {
+    const inv = Number(x?.investedAmount) || 0;
+    if (inv > 0) equity *= 1 + (Number(x?.pnl) || 0) / inv;
+  }
+  return {
+    ...result,
+    trades: filteredTrades,
+    tradesCount: filteredTrades.length,
+    winRate: filteredTrades.length ? wins / filteredTrades.length : 0,
+    totalReturn: filteredTrades.length ? equity - 1 : 0,
+  };
+}
+
+function applyRsiMaCopyDateRangeToBacktestResult(result, loadedOhlcv, filterFrom, filterTo) {
+  if (!filterFrom && !filterTo) return { result, monthlyBreakdown: aggregateTradesByExitMonth(result.trades, loadedOhlcv) };
+  const ft = filterTradesByRsiMaCopyDateRange(result.trades, filterFrom, filterTo);
+  const adj = recomputeRsiMaCopyBacktestSummary(result, ft);
+  return {
+    result: adj,
+    monthlyBreakdown: aggregateTradesByExitMonth(ft, loadedOhlcv),
+  };
+}
+
+function signalEntryInRsiMaCopyDateRange(entryTime, filterFrom, filterTo) {
+  if (!filterFrom && !filterTo) return true;
+  const t = entryTime instanceof Date ? entryTime.getTime() : new Date(entryTime).getTime();
+  if (Number.isNaN(t)) return false;
+  if (filterFrom && t < filterFrom.getTime()) return false;
+  if (filterTo && t > filterTo.getTime()) return false;
+  return true;
+}
+
+/**
+ * Load OHLCV for RSI↓MA / eighty-percent backtests: daily bars, or daily aggregated to monthly (UTC month).
+ * @param {object|null} candleRange - `{ candleOpts }` from parseRsiMaCopyDateRangePayload (copy backtest only); omit for default last-N fetch.
+ */
+async function loadOhlcvRsiMaBacktest(symbol, series, candleRange = null) {
   const mode = normalizeBacktestSeries(series);
+  const fetchOpts = candleRange?.candleOpts && Object.keys(candleRange.candleOpts).length > 0 ? candleRange.candleOpts : undefined;
   if (mode === 'month') {
-    const dailies = await getCandlesForSignal(symbol, 'day', RSI_MA_DAILY_FETCH_FOR_MONTHLY);
+    const dailies = await getCandlesForSignal(symbol, 'day', RSI_MA_DAILY_FETCH_FOR_MONTHLY, fetchOpts);
     const months = aggregateDailyToMonthly(dailies);
     if (months.length < RSI_MA_MIN_MONTHLY_BARS) {
       return {
@@ -70,7 +165,7 @@ async function loadOhlcvRsiMaBacktest(symbol, series) {
     }));
     return { ok: true, ohlcv, barUnit: 'month', dailyBarsUsed: dailies.length, monthlyBars: months.length };
   }
-  const candles = await getCandlesForSignal(symbol, 'day', 500);
+  const candles = await getCandlesForSignal(symbol, 'day', 500, fetchOpts);
   if (candles.length < RSI_MA_MIN_DAILY_BARS) {
     return {
       ok: false,
@@ -282,8 +377,17 @@ function attachRsiMaCopyTradeLevels(row, entryPrice, exitOpts) {
 }
 
 /** RSI↓MA Setup (copy): same row shape as primary; uses `rsiMaSetupCopy.js` for independent tuning. */
-async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe, exitOpts = {}, evalOpts = {}) {
-  const candles = await getCandlesForSignal(symbol, timeframe, 500);
+async function evaluateRsiMaSetupCopyForSymbol(
+  symbol,
+  tradingsymbol,
+  timeframe,
+  exitOpts = {},
+  evalOpts = {},
+  dateRange = null,
+) {
+  const fetchOpts =
+    dateRange?.candleOpts && Object.keys(dateRange.candleOpts).length > 0 ? dateRange.candleOpts : undefined;
+  const candles = await getCandlesForSignal(symbol, timeframe, 500, fetchOpts);
   if (candles.length < 30) return null;
   const ohlcv = candles.map((c) => ({
     open: c.open,
@@ -346,13 +450,48 @@ async function evaluateRsiMaSetupCopyForSymbol(symbol, tradingsymbol, timeframe,
       createdAt: now,
     });
   }
+
+  if (dateRange && (dateRange.filterFrom || dateRange.filterTo)) {
+    const buys = rows.filter(
+      (r) =>
+        r.signal_type === 'BUY' &&
+        signalEntryInRsiMaCopyDateRange(r.entryTime, dateRange.filterFrom, dateRange.filterTo),
+    );
+    if (buys.length > 0) return buys;
+    return [
+      {
+        instrument: symbol,
+        tradingsymbol: tradingsymbol || symbol,
+        signal_type: 'HOLD',
+        confidence: null,
+        explanation: 'No RSI↓MA Setup (copy) BUY in the selected date range.',
+        entryPrice: null,
+        firstDipBelow40Close: null,
+        entryTime: null,
+        confidenceScore: null,
+        confidenceLabel: null,
+        rsi: rsiValue,
+        createdAt: now,
+      },
+    ];
+  }
   return rows;
 }
 
 /** BUY on latest daily bar only (same as `evaluate()` in rsiMaSetupCopy.js), for scan-all live list. */
-async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOpts = {}, evalOpts = {}) {
-  const candles = await getCandlesForSignal(symbol, 'day', 500);
+async function evaluateRsiMaSetupCopyLiveDailyOnly(symbol, tradingsymbol, exitOpts = {}, evalOpts = {}, dateRange = null) {
+  const fetchOpts =
+    dateRange?.candleOpts && Object.keys(dateRange.candleOpts).length > 0 ? dateRange.candleOpts : undefined;
+  const candles = await getCandlesForSignal(symbol, 'day', 500, fetchOpts);
   if (candles.length < 30) return null;
+  if (dateRange && (dateRange.filterFrom || dateRange.filterTo)) {
+    const lastT = candles[candles.length - 1]?.time;
+    const ms = lastT instanceof Date ? lastT.getTime() : new Date(lastT).getTime();
+    if (!Number.isNaN(ms)) {
+      if (dateRange.filterFrom && ms < dateRange.filterFrom.getTime()) return null;
+      if (dateRange.filterTo && ms > dateRange.filterTo.getTime()) return null;
+    }
+  }
   const ohlcv = candles.map((c) => ({
     open: c.open,
     high: c.high,
@@ -779,6 +918,10 @@ router.get('/rsi-ma-setup-copy/combined', async (req, res) => {
     return res.status(503).json({ error: 'Database not connected' });
   }
   try {
+    const parsedRange = parseRsiMaCopyDateRangePayload(req.query, {});
+    if (parsedRange.error) return res.status(400).json({ error: parsedRange.error });
+    const dateRange = parsedRange.range;
+
     const symbols = await getSymbolsWithStoredCandles();
     const reqLimit = parseInt(req.query.limit, 10);
     const limit = Number.isFinite(reqLimit) && reqLimit > 0 ? Math.min(5000, reqLimit) : symbols.length;
@@ -793,10 +936,10 @@ router.get('/rsi-ma-setup-copy/combined', async (req, res) => {
       if (!sym && !ts) continue;
       try {
         if (liveOnly) {
-          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts, exitOpts, evalOpts);
+          const row = await evaluateRsiMaSetupCopyLiveDailyOnly(sym, ts, exitOpts, evalOpts, dateRange);
           if (row) combined.push(row);
         } else {
-          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day', exitOpts, evalOpts);
+          const rows = await evaluateRsiMaSetupCopyForSymbol(sym, ts, 'day', exitOpts, evalOpts, dateRange);
           if (!rows || rows.length === 0) continue;
           combined.push(...rows);
         }
@@ -806,15 +949,24 @@ router.get('/rsi-ma-setup-copy/combined', async (req, res) => {
     }
     combined.sort((a, b) => (a.signal_type === 'BUY' ? 0 : 1) - (b.signal_type === 'BUY' ? 0 : 1));
     const checkedCount = Math.min(symbols.length, limit);
+    const rangeMeta =
+      dateRange &&
+      (dateRange.filterFrom || dateRange.filterTo || req.query.fromDate || req.query.toDate)
+        ? {
+            fromDate: dateRange.filterFrom ? dateRange.filterFrom.toISOString().slice(0, 10) : null,
+            toDate: dateRange.filterTo ? dateRange.filterTo.toISOString().slice(0, 10) : null,
+          }
+        : undefined;
     if (liveOnly) {
       res.json({
         signals: combined,
         checkedCount,
         liveOnly: true,
         buyCount: combined.length,
+        ...(rangeMeta ? { dateRange: rangeMeta } : {}),
       });
     } else {
-      res.json({ signals: combined, checkedCount });
+      res.json({ signals: combined, checkedCount, ...(rangeMeta ? { dateRange: rangeMeta } : {}) });
     }
   } catch (err) {
     logger.error('RSI↓MA Setup copy combined failed', { error: err?.message });
@@ -847,23 +999,43 @@ router.post('/rsi-ma-setup-copy/backtest', async (req, res) => {
       req.body?.maxStockPrice ?? req.query?.maxStockPrice,
     );
     if ('error' in pf) return res.status(400).json({ error: pf.error });
+    const parsedRange = parseRsiMaCopyDateRangePayload(req.query ?? {}, req.body ?? {});
+    if (parsedRange.error) return res.status(400).json({ error: parsedRange.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
     if (pFrac.value != null) copyBtOpts.partialTpFraction = pFrac.value;
     if (pf.minPrice != null) copyBtOpts.minStockPrice = pf.minPrice;
     if (pf.maxPrice != null) copyBtOpts.maxStockPrice = pf.maxPrice;
-    const loaded = await loadOhlcvRsiMaBacktest(symbol, series);
+    const loaded = await loadOhlcvRsiMaBacktest(symbol, series, parsedRange.range);
     if (!loaded.ok) return res.status(loaded.status).json(loaded.body);
     const result = runRsiMaSetupCopyBacktest(loaded.ohlcv, copyBtOpts);
-    const monthlyBreakdown = aggregateTradesByExitMonth(result.trades, loaded.ohlcv);
+    const { result: adjResult, monthlyBreakdown } = applyRsiMaCopyDateRangeToBacktestResult(
+      result,
+      loaded.ohlcv,
+      parsedRange.range?.filterFrom ?? null,
+      parsedRange.range?.filterTo ?? null,
+    );
+    const rangeMeta =
+      parsedRange.range &&
+      (parsedRange.range.filterFrom || parsedRange.range.filterTo)
+        ? {
+            fromDate: parsedRange.range.filterFrom
+              ? parsedRange.range.filterFrom.toISOString().slice(0, 10)
+              : null,
+            toDate: parsedRange.range.filterTo
+              ? parsedRange.range.filterTo.toISOString().slice(0, 10)
+              : null,
+          }
+        : undefined;
     const payload = {
       symbol,
       barUnit: loaded.barUnit,
       dailyBarsUsed: loaded.dailyBarsUsed,
       monthlyBars: loaded.monthlyBars,
       monthlyBreakdown,
-      ...result,
+      ...adjResult,
+      ...(rangeMeta ? { dateRange: rangeMeta } : {}),
     };
     void persistBacktestRun({
       route: 'POST /api/signals/rsi-ma-setup-copy/backtest',
@@ -899,6 +1071,8 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
     if ('error' in pFrac) return res.status(400).json({ error: pFrac.error });
     const pf = parseRsiBacktestPriceFilter(req.query.minStockPrice, req.query.maxStockPrice);
     if ('error' in pf) return res.status(400).json({ error: pf.error });
+    const parsedRange = parseRsiMaCopyDateRangePayload(req.query, {});
+    if (parsedRange.error) return res.status(400).json({ error: parsedRange.error });
     const copyBtOpts = { maxHoldingDays };
     if (ptp.value != null) copyBtOpts.profitTargetPct = ptp.value;
     if (rsiRem.value != null) copyBtOpts.rsiRemainderExit = rsiRem.value;
@@ -917,17 +1091,22 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
     for (const { symbol: sym, tradingsymbol: ts } of toRun) {
       const inst = ts || sym;
       try {
-        const loaded = await loadOhlcvRsiMaBacktest(sym, series);
+        const loaded = await loadOhlcvRsiMaBacktest(sym, series, parsedRange.range);
         if (!loaded.ok) {
           skippedInsufficientCandles += 1;
           continue;
         }
         const result = runRsiMaSetupCopyBacktest(loaded.ohlcv, copyBtOpts);
-        const monthlyBreakdown = aggregateTradesByExitMonth(result.trades, loaded.ohlcv);
-        const sums = sumTradesInvestedAndPnl(result.trades);
+        const { result: adjResult, monthlyBreakdown } = applyRsiMaCopyDateRangeToBacktestResult(
+          result,
+          loaded.ohlcv,
+          parsedRange.range?.filterFrom ?? null,
+          parsedRange.range?.filterTo ?? null,
+        );
+        const sums = sumTradesInvestedAndPnl(adjResult.trades);
         totalInvestedAmount += sums.totalInvestedAmount;
         totalPnl += sums.totalPnl;
-        results.push(toCombinedBacktestRow(result, monthlyBreakdown, inst, ts || sym));
+        results.push(toCombinedBacktestRow(adjResult, monthlyBreakdown, inst, ts || sym));
       } catch (err) {
         logger.warn('RSI↓MA Setup copy backtest skip', { symbol: inst, error: err?.message });
       }
@@ -957,6 +1136,18 @@ router.get('/rsi-ma-setup-copy/backtest/combined', async (req, res) => {
       partialTpFraction: pFrac.value ?? RSI_MA_COPY_DEFAULT_PARTIAL_TP_FRACTION,
       minStockPrice: pf.minPrice ?? RSI_MA_COPY_MIN_PRICE,
       maxStockPrice: pf.maxPrice ?? null,
+      ...(parsedRange.range && (parsedRange.range.filterFrom || parsedRange.range.filterTo)
+        ? {
+            dateRange: {
+              fromDate: parsedRange.range.filterFrom
+                ? parsedRange.range.filterFrom.toISOString().slice(0, 10)
+                : null,
+              toDate: parsedRange.range.filterTo
+                ? parsedRange.range.filterTo.toISOString().slice(0, 10)
+                : null,
+            },
+          }
+        : {}),
     };
     void persistBacktestRun({
       route: 'GET /api/signals/rsi-ma-setup-copy/backtest/combined',
